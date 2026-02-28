@@ -1,0 +1,24 @@
+{
+    "name": "المسابقة — Competition App",
+    "short_name": "المسابقة",
+    "description": "نظام إدارة المسابقات بين الفرق",
+    "theme_color": "#0f0e2a",
+    "background_color": "#0f0e2a",
+    "display": "standalone",
+    "dir": "rtl",
+    "lang": "ar",
+    "start_url": "/",
+    "icons": [
+        {
+            "src": "icon-192.png",
+            "sizes": "192x192",
+            "type": "image/png"
+        },
+        {
+            "src": "icon-512.png",
+            "sizes": "512x512",
+            "type": "image/png",
+            "purpose": "any maskable"
+        }
+    ]
+}

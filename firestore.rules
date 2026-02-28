@@ -1,0 +1,125 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function getRole() {
+      return request.auth.token.role;
+    }
+
+    function isSuperAdmin() {
+      return getRole() == 'super_admin';
+    }
+
+    function isAdmin() {
+      return getRole() == 'admin';
+    }
+
+    function isLeader() {
+      return getRole() == 'leader';
+    }
+
+    function getUserStage() {
+      return request.auth.token.stageId;
+    }
+
+    function isSameStage(stageId) {
+      return stageId == getUserStage();
+    }
+
+    function teamExists(teamId) {
+      return exists(/databases/$(database)/documents/teams/$(teamId));
+    }
+
+    function getTeamStage(teamId) {
+      return get(/databases/$(database)/documents/teams/$(teamId)).data.stageId;
+    }
+
+    function canCreateStageScoreForTeam(teamId, stageId) {
+      return teamExists(teamId) &&
+        isSameStage(stageId) &&
+        isSameStage(getTeamStage(teamId));
+    }
+
+    function getScoreTargetType() {
+      return request.resource.data.targetType == null ? 'team' : request.resource.data.targetType;
+    }
+
+    function isValidScorePayload() {
+      return (getScoreTargetType() == 'team' || getScoreTargetType() == 'member') &&
+        request.resource.data.applyToTeamTotal == true &&
+        (
+          getScoreTargetType() == 'team' ||
+          (request.resource.data.memberKey is string &&
+            request.resource.data.memberName is string)
+        );
+    }
+
+    function userDocInMyStage(userData) {
+      return (userData.stageId is string && isSameStage(userData.stageId)) ||
+        (userData.teamId is string && teamExists(userData.teamId) && isSameStage(getTeamStage(userData.teamId)));
+    }
+
+    function leaderOnlyUpdatesTeamPoints() {
+      return request.resource.data.diff(resource.data).changedKeys().hasOnly(['totalPoints']) &&
+        request.resource.data.totalPoints is number &&
+        isSameStage(resource.data.stageId) &&
+        isSameStage(request.resource.data.stageId);
+    }
+
+    // Users: any authenticated user can create their own doc (for account setup)
+    // super_admin has full access. admin can read users in same stage? The prompt says "admin can only read/write documents where stageId == ...". But users might not have stageId in db or it's on their token. Let's let them read all for UI to work or read same stage.
+    match /users/{userId} {
+      allow read: if isSuperAdmin() ||
+        request.auth.uid == userId ||
+        ((isAdmin() || isLeader()) && userDocInMyStage(resource.data));
+      allow create: if isAuthenticated() && request.auth.uid == userId;
+      allow update, delete: if isSuperAdmin() || request.auth.uid == userId || (isAdmin() && isSameStage(resource.data.stageId) && isSameStage(request.resource.data.stageId));
+    }
+
+    match /teams/{teamId} {
+      allow read: if true;
+      allow create: if isSuperAdmin() || (isAdmin() && isSameStage(request.resource.data.stageId));
+      allow update: if isSuperAdmin() || 
+                    (isAdmin() && isSameStage(resource.data.stageId) && isSameStage(request.resource.data.stageId)) ||
+                    (isLeader() && leaderOnlyUpdatesTeamPoints());
+      allow delete: if isSuperAdmin() || (isAdmin() && isSameStage(resource.data.stageId));
+    }
+
+    match /tasks/{taskId} {
+      allow read: if true;
+      allow write: if isSuperAdmin(); // Usually only super_admin creates tasks
+    }
+
+    match /scores/{scoreId} {
+      allow read: if isAuthenticated() && (isSuperAdmin() || ((isAdmin() || isLeader()) && isSameStage(resource.data.stageId)));
+      allow create: if isAuthenticated() && (
+        isSuperAdmin() ||
+        ((isAdmin() || isLeader()) &&
+          canCreateStageScoreForTeam(request.resource.data.teamId, request.resource.data.stageId) &&
+          isValidScorePayload())
+      );
+      allow update, delete: if isAuthenticated() && (isSuperAdmin() || (isAdmin() && isSameStage(resource.data.stageId)));
+    }
+
+    match /member_stats/{memberKey} {
+      allow read: if isAuthenticated() && (isSuperAdmin() || ((isAdmin() || isLeader()) && isSameStage(resource.data.stageId)));
+      allow create: if isAuthenticated() && (isSuperAdmin() || ((isAdmin() || isLeader()) && isSameStage(request.resource.data.stageId)));
+      allow update: if isAuthenticated() && (
+        isSuperAdmin() ||
+        ((isAdmin() || isLeader()) &&
+          isSameStage(resource.data.stageId) &&
+          isSameStage(request.resource.data.stageId))
+      );
+      allow delete: if isAuthenticated() && (isSuperAdmin() || (isAdmin() && isSameStage(resource.data.stageId)));
+    }
+
+    match /logs/{logId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update, delete: if false;
+    }
+  }
+}

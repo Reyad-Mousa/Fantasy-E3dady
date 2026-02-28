@@ -1,0 +1,33 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "member_stats",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "stageId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "totalPoints",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "scores",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "stageId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "timestamp",
+          "order": "DESCENDING"
+        }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}
