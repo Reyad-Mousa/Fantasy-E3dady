@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import { collection, onSnapshot, orderBy, query, where } from 'firebase/firestore';
 import { db } from '@/services/firebase';
-import { motion } from 'motion/react';
-import { ArrowRight, Trophy, UserRound } from 'lucide-react';
+import { motion, AnimatePresence } from 'motion/react';
+import { Trophy, UserRound, X } from 'lucide-react';
 import StageFilterBar, { FilterValue } from './StageFilterBar';
 import { SectionHeader } from './ui/SharedUI';
 import { STAGES_LIST, StageId } from '@/config/stages';
@@ -14,6 +14,7 @@ interface Team {
     totalPoints: number;
     memberCount: number;
     stageId: string;
+    members?: string[];
 }
 
 interface MemberStat {
@@ -40,6 +41,8 @@ export default function Leaderboard({ onBack }: { onBack?: () => void }) {
         grade9: [],
     });
 
+    const [selectedTeam, setSelectedTeam] = useState<Team | null>(null);
+
     useEffect(() => {
         const unsubs = STAGES_LIST.map((stage) => {
             const q = query(
@@ -54,7 +57,9 @@ export default function Leaderboard({ onBack }: { onBack?: () => void }) {
         });
 
         return () => {
-            unsubs.forEach((unsub) => unsub());
+            unsubs.forEach((unsub) => {
+                if (typeof unsub === 'function') unsub();
+            });
         };
     }, []);
 
@@ -74,7 +79,9 @@ export default function Leaderboard({ onBack }: { onBack?: () => void }) {
         });
 
         return () => {
-            unsubs.forEach((unsub) => unsub());
+            unsubs.forEach((unsub) => {
+                if (typeof unsub === 'function') unsub();
+            });
         };
     }, []);
 
@@ -141,7 +148,11 @@ export default function Leaderboard({ onBack }: { onBack?: () => void }) {
                         const rank = index + 1;
                         const isRank1 = rank === 1;
                         return (
-                            <div key={item.id} className="flex items-center gap-3 p-3 hover:bg-surface/50 rounded-xl transition-colors">
+                            <div
+                                key={item.id}
+                                onClick={() => isTeams && setSelectedTeam(item as Team)}
+                                className={`flex items-center gap-3 p-3 hover:bg-surface/50 rounded-xl transition-colors ${isTeams ? 'cursor-pointer' : ''}`}
+                            >
                                 <span
                                     className={
                                         rank === 1 ? 'text-2xl drop-shadow-md' :
@@ -212,6 +223,104 @@ export default function Leaderboard({ onBack }: { onBack?: () => void }) {
             <div className={filter === 'all' ? 'grid lg:grid-cols-3 gap-6' : 'max-w-2xl mx-auto'}>
                 {stagesToShow.map((id) => renderStageCard(id as StageId))}
             </div>
+
+            {/* Team Members Modal */}
+            <AnimatePresence>
+                {selectedTeam && (
+                    <div className="modal-backdrop" onClick={() => setSelectedTeam(null)}>
+                        <motion.div
+                            initial={{ opacity: 0, scale: 0.9, y: 20 }}
+                            animate={{ opacity: 1, scale: 1, y: 0 }}
+                            exit={{ opacity: 0, scale: 0.9, y: 20 }}
+                            className="glass-card p-0 max-w-md w-full overflow-hidden"
+                            onClick={e => e.stopPropagation()}
+                        >
+                            <div className="gradient-primary p-6 text-center relative">
+                                <button
+                                    onClick={() => setSelectedTeam(null)}
+                                    className="absolute top-4 left-4 p-2 rounded-xl bg-white/10 hover:bg-white/20 transition-colors"
+                                >
+                                    <X className="w-4 h-4 text-white" />
+                                </button>
+                                <div className="w-16 h-16 rounded-2xl bg-white/20 backdrop-blur-sm flex items-center justify-center mx-auto mb-3">
+                                    <span className="text-3xl font-black text-white">{selectedTeam.name.charAt(0)}</span>
+                                </div>
+                                <h3 className="text-xl font-bold text-white mb-1">
+                                    {selectedTeam.name}
+                                </h3>
+                                <div className="flex items-center justify-center gap-4 text-white/80 text-sm">
+                                    <span className="flex items-center gap-1">
+                                        <Trophy className="w-4 h-4" />
+                                        {selectedTeam.totalPoints} نقطة
+                                    </span>
+                                    <span className="flex items-center gap-1">
+                                        <UserRound className="w-4 h-4" />
+                                        {selectedTeam.memberCount} عضو
+                                    </span>
+                                </div>
+                            </div>
+
+                            <div className="p-4 max-h-[60vh] overflow-y-auto">
+                                <h4 className="font-bold text-text-primary mb-3 px-2">أعضاء الفريق</h4>
+                                {(() => {
+                                    const teamMembers = (selectedTeam.members || []).map(memberName => {
+                                        const stat = (membersByStage[selectedTeam.stageId as StageId] || [])
+                                            .find(m => m.teamId === selectedTeam.id && m.memberName === memberName);
+                                        return {
+                                            id: stat?.id || `${selectedTeam.id}-${memberName}`,
+                                            memberName,
+                                            totalPoints: stat ? stat.totalPoints : 0
+                                        };
+                                    }).sort((a, b) => b.totalPoints - a.totalPoints);
+
+                                    if (teamMembers.length === 0) {
+                                        return (
+                                            <div className="text-center p-6 bg-surface/30 rounded-xl border border-border/50">
+                                                <p className="text-text-muted text-sm">لا يوجد أعضاء في هذا الفريق</p>
+                                            </div>
+                                        );
+                                    }
+
+                                    return (
+                                        <div className="space-y-2">
+                                            {teamMembers.map((member, idx) => {
+                                                const rank = idx + 1;
+                                                return (
+                                                    <div
+                                                        key={member.id}
+                                                        className={`flex items-center justify-between p-3 rounded-xl border ${rank <= 3
+                                                            ? 'bg-gradient-to-l from-primary/10 to-transparent border-primary/20'
+                                                            : 'bg-surface/50 border-border/50'
+                                                            }`}
+                                                    >
+                                                        <div className="flex items-center gap-3">
+                                                            <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm ${rank === 1 ? 'bg-amber-500/20 text-amber-500' :
+                                                                rank === 2 ? 'bg-slate-400/20 text-slate-400' :
+                                                                    rank === 3 ? 'bg-amber-700/20 text-amber-700' :
+                                                                        'bg-white/5 text-text-muted'
+                                                                }`}>
+                                                                {rank === 1 ? '🥇' : rank === 2 ? '🥈' : rank === 3 ? '🥉' : rank}
+                                                            </div>
+                                                            <span className="font-bold text-text-primary text-sm">{member.memberName}</span>
+                                                        </div>
+                                                        <span className={`font-black ${rank === 1 ? 'text-amber-500' :
+                                                            rank === 2 ? 'text-slate-400' :
+                                                                rank === 3 ? 'text-amber-700' :
+                                                                    'text-text-secondary'
+                                                            }`}>
+                                                            {member.totalPoints}
+                                                        </span>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    );
+                                })()}
+                            </div>
+                        </motion.div>
+                    </div>
+                )}
+            </AnimatePresence>
         </div>
     );
 }

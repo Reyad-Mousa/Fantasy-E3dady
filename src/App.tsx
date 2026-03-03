@@ -23,6 +23,25 @@ function getTabFromHash(): string {
   return VALID_TABS.includes(hash) ? hash : 'home';
 }
 
+function isTabAllowed(tab: string, user: any): boolean {
+  switch (tab) {
+    case 'teams':
+      return !!user && ['super_admin', 'admin'].includes(user.role);
+    case 'scores':
+      return !!user && ['super_admin', 'admin', 'leader'].includes(user.role);
+    case 'members':
+    case 'admin':
+      return !!user && user.role === 'super_admin';
+    case 'activities':
+      return !!user;
+    case 'home':
+    case 'leaderboard':
+    case 'tasks':
+    default:
+      return true; // Public or broadly allowed tabs
+  }
+}
+
 function AppContent() {
   const { user, isLoading } = useAuth();
   const [activeTab, setActiveTab] = useState(getTabFromHash);
@@ -36,10 +55,28 @@ function AppContent() {
 
   // Sync tab when browser back/forward changes the hash
   useEffect(() => {
-    const onHashChange = () => setActiveTab(getTabFromHash());
+    const onHashChange = () => {
+      let nextTab = getTabFromHash();
+      // Wait for auth to finish loading before redirecting, otherwise it bounces back to home too early.
+      if (!isLoading && !isTabAllowed(nextTab, user)) {
+        nextTab = 'home';
+        window.location.hash = ''; // Revert the hash
+        // We can show a toast here if we imported useToast, but simple redirect is enough
+      }
+      setActiveTab(nextTab);
+    };
     window.addEventListener('hashchange', onHashChange);
     return () => window.removeEventListener('hashchange', onHashChange);
-  }, []);
+  }, [user, isLoading]);
+
+  // Initial load check and whenever user/loading state changes
+  useEffect(() => {
+    if (isLoading) return;
+    const currentTab = getTabFromHash();
+    if (!isTabAllowed(currentTab, user)) {
+      handleNavigate('home');
+    }
+  }, [user, isLoading, handleNavigate]);
 
   if (isLoading) return <FullPageLoading />;
 

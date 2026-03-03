@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { updateProfile, updatePassword, EmailAuthProvider, reauthenticateWithCredential } from 'firebase/auth';
-import { doc, updateDoc } from 'firebase/firestore';
+import { doc, setDoc } from 'firebase/firestore';
 import { auth, db } from '@/services/firebase';
 import { useAuth } from '@/context/AuthContext';
 import { useToast } from './ui/SharedUI';
@@ -19,6 +19,12 @@ export default function ProfileSettings({ isOpen, onClose }: ProfileSettingsProp
     // Name
     const [newName, setNewName] = useState(user?.name || '');
     const [savingName, setSavingName] = useState(false);
+
+    useEffect(() => {
+        if (user?.name) {
+            setNewName(user.name);
+        }
+    }, [user?.name]);
 
     // Password
     const [currentPassword, setCurrentPassword] = useState('');
@@ -40,9 +46,9 @@ export default function ProfileSettings({ isOpen, onClose }: ProfileSettingsProp
             await updateProfile(auth.currentUser, { displayName: newName.trim() });
 
             // Update Firestore user doc
-            await updateDoc(doc(db, 'users', auth.currentUser.uid), {
+            await setDoc(doc(db, 'users', auth.currentUser.uid), {
                 name: newName.trim(),
-            });
+            }, { merge: true });
 
             showToast('تم تحديث الاسم بنجاح ✅');
 
@@ -146,8 +152,8 @@ export default function ProfileSettings({ isOpen, onClose }: ProfileSettingsProp
                             <button
                                 onClick={() => setActiveSection('name')}
                                 className={`flex-1 flex items-center justify-center gap-2 py-3 text-sm font-bold transition-colors ${activeSection === 'name'
-                                        ? 'text-primary border-b-2 border-primary'
-                                        : 'text-text-muted hover:text-text-secondary'
+                                    ? 'text-primary border-b-2 border-primary'
+                                    : 'text-text-muted hover:text-text-secondary'
                                     }`}
                             >
                                 <User className="w-4 h-4" />
@@ -156,8 +162,8 @@ export default function ProfileSettings({ isOpen, onClose }: ProfileSettingsProp
                             <button
                                 onClick={() => setActiveSection('password')}
                                 className={`flex-1 flex items-center justify-center gap-2 py-3 text-sm font-bold transition-colors ${activeSection === 'password'
-                                        ? 'text-primary border-b-2 border-primary'
-                                        : 'text-text-muted hover:text-text-secondary'
+                                    ? 'text-primary border-b-2 border-primary'
+                                    : 'text-text-muted hover:text-text-secondary'
                                     }`}
                             >
                                 <Lock className="w-4 h-4" />

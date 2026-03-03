@@ -95,11 +95,12 @@ export default defineConfig(({ mode }) => {
       },
     },
     build: {
+      chunkSizeWarningLimit: 1000,
       rollupOptions: {
         output: {
           manualChunks: {
             firebase: ['firebase/app', 'firebase/auth', 'firebase/firestore'],
-            ui: ['motion/react', 'recharts', 'lucide-react'],
+            ui: ['motion/react', 'motion', 'recharts', 'lucide-react'],
             xlsx: ['xlsx'],
           },
         },
