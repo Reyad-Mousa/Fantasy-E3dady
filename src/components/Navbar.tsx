@@ -114,14 +114,14 @@ export default function Navbar({ activeTab, setActiveTab, onLoginClick }: Navbar
             </div>
 
             {/* Desktop Nav */}
-            <div className="hidden md:flex items-center gap-1 bg-surface-card p-1.5 rounded-2xl border border-border/20">
+            <div className="hidden lg:flex items-center gap-0.5 xl:gap-1 bg-surface-card p-1 xl:p-1.5 rounded-2xl border border-border/20">
               {filteredItems.map(item => {
                 const isActive = activeTab === item.id;
                 return (
                   <button
                     key={item.id}
                     onClick={() => handleTabClick(item.id)}
-                    className={`relative flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-bold transition-all duration-300 ${isActive ? 'text-white' : 'text-text-secondary hover:text-text-primary hover:bg-white/5'
+                    className={`relative flex items-center gap-1.5 xl:gap-2 px-2.5 xl:px-4 py-1.5 xl:py-2.5 rounded-xl text-[12px] xl:text-sm font-bold transition-all duration-300 ${isActive ? 'text-white' : 'text-text-secondary hover:text-text-primary hover:bg-white/5'
                       }`}
                   >
                     {isActive && (
@@ -146,7 +146,7 @@ export default function Navbar({ activeTab, setActiveTab, onLoginClick }: Navbar
               <div className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold ${online ? 'bg-success/10 text-success' : 'bg-danger/10 text-danger'
                 }`}>
                 {online ? <Wifi className="w-3.5 h-3.5" /> : <WifiOff className="w-3.5 h-3.5" />}
-                <span className="hidden sm:inline">{online ? 'متصل' : 'غير متصل'}</span>
+                <span className="hidden xl:inline">{online ? 'متصل' : 'غير متصل'}</span>
               </div>
 
               {user?.stageId && (
@@ -166,13 +166,13 @@ export default function Navbar({ activeTab, setActiveTab, onLoginClick }: Navbar
                     <div className="w-8 h-8 rounded-lg gradient-primary flex items-center justify-center text-white">
                       <User className="w-4 h-4" />
                     </div>
-                    <div className="hidden sm:block text-right">
+                    <div className="hidden xl:block text-right">
                       <p className="text-xs font-bold text-text-primary leading-none">{user.name}</p>
                       <span className={`inline-block mt-0.5 text-[10px] font-bold px-1.5 py-0.5 rounded-full border ${getRoleBadgeColor(user.role)}`}>
                         {getRoleLabel(user.role)}
                       </span>
                     </div>
-                    <ChevronDown className="w-4 h-4 text-text-muted hidden sm:block" />
+                    <ChevronDown className="w-4 h-4 text-text-muted hidden xl:block" />
                   </button>
 
                   <AnimatePresence>
@@ -221,7 +221,9 @@ export default function Navbar({ activeTab, setActiveTab, onLoginClick }: Navbar
               {/* Mobile menu button */}
               <button
                 onClick={() => setMobileOpen(!mobileOpen)}
-                className="md:hidden p-2 rounded-xl hover:bg-surface/50 transition-colors text-text-secondary"
+                className="lg:hidden p-2 rounded-xl hover:bg-surface/50 transition-colors text-text-secondary"
+                aria-label="القائمة الرئيسية"
+                aria-expanded={mobileOpen}
               >
                 {mobileOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
               </button>
@@ -236,7 +238,7 @@ export default function Navbar({ activeTab, setActiveTab, onLoginClick }: Navbar
               initial={animationsEnabled ? { height: 0, opacity: 0 } : false}
               animate={animationsEnabled ? { height: 'auto', opacity: 1 } : undefined}
               exit={animationsEnabled ? { height: 0, opacity: 0 } : undefined}
-              className="md:hidden border-t border-border/50 overflow-hidden bg-surface-card"
+              className="lg:hidden border-t border-border/50 overflow-hidden bg-surface-card"
             >
               <div className="p-4 grid grid-cols-2 gap-3">
                 {filteredItems.map(item => {

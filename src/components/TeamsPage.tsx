@@ -1,28 +1,20 @@
-import { useState, useEffect } from 'react';
-import { collection, onSnapshot, doc, setDoc, updateDoc, deleteDoc, serverTimestamp, arrayUnion, arrayRemove, query, where } from 'firebase/firestore';
-import { db } from '@/services/firebase';
+import { useState } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import { useToast, SectionHeader, EmptyState, ConfirmModal } from './ui/SharedUI';
 import { motion, AnimatePresence } from 'motion/react';
 import { Plus, Edit3, Trash2, X, Users, Trophy, UserPlus, UserMinus } from 'lucide-react';
 import StageBadge from './StageBadge';
+import StageFilterBar, { FilterValue } from './StageFilterBar';
 import { STAGES_LIST } from '@/config/stages';
-
-interface TeamData {
-    id: string;
-    name: string;
-    leaderId: string;
-    totalPoints: number;
-    memberCount: number;
-    members?: string[]; // أسماء الأعضاء
-    stageId?: string | null;
-}
+import { useTeamsData, type TeamData } from '@/hooks/useTeamsData';
 
 export default function TeamsPage({ onBack }: { onBack?: () => void }) {
     const { user } = useAuth();
     const { showToast } = useToast();
-    const [teams, setTeams] = useState<TeamData[]>([]);
-    const [loading, setLoading] = useState(true);
+
+    const { teams, loading, saveTeam, deleteTeam, addMember, removeMember } = useTeamsData(user, showToast);
+
+    const [stageFilter, setStageFilter] = useState<FilterValue>('all');
 
     // Team form
     const [showTeamModal, setShowTeamModal] = useState(false);
@@ -34,70 +26,20 @@ export default function TeamsPage({ onBack }: { onBack?: () => void }) {
     // Member add form
     const [addingMemberTo, setAddingMemberTo] = useState<TeamData | null>(null);
     const [newMemberName, setNewMemberName] = useState('');
-
-    useEffect(() => {
-        if (!user) return;
-        const q = (user.role === 'admin' || user.role === 'leader') && user.stageId
-            ? query(collection(db, 'teams'), where('stageId', '==', user.stageId))
-            : collection(db, 'teams');
-
-        const unsub = onSnapshot(q, snap => {
-            setTeams(snap.docs.map(d => ({ id: d.id, ...d.data() } as TeamData)));
-            setLoading(false);
-        });
-        return unsub;
-    }, [user]);
+    const [removeMemberConfirm, setRemoveMemberConfirm] = useState<{ team: TeamData, memberName: string } | null>(null);
 
     // ──────────── Team CRUD ────────────
     const handleSaveTeam = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (!teamName.trim()) return;
-
-        try {
-            if (editingTeam) {
-                await updateDoc(doc(db, 'teams', editingTeam.id), {
-                    name: teamName.trim(),
-                    ...(user?.role === 'super_admin' && teamStageId && { stageId: teamStageId }),
-                });
-                showToast('تم تحديث الفريق');
-            } else {
-                const id = `team_${Date.now()}`;
-
-                // Determine stageId:
-                // - Admin/Leader: implicitly set to their own stageId
-                // - Super Admin: use the selected teamStageId or null
-                let assignedStageId = user?.stageId || null;
-                if (user?.role === 'super_admin') {
-                    assignedStageId = teamStageId || null;
-                }
-
-                await setDoc(doc(db, 'teams', id), {
-                    name: teamName.trim(),
-                    leaderId: user?.uid || '',
-                    totalPoints: 0,
-                    memberCount: 0,
-                    members: [],
-                    createdBy: user?.uid || '',
-                    createdAt: serverTimestamp(),
-                    stageId: assignedStageId,
-                });
-                showToast('تم إنشاء الفريق بنجاح ✅');
-            }
+        await saveTeam(teamName, teamStageId, editingTeam, () => {
             resetTeamForm();
-        } catch {
-            showToast('فشل في حفظ الفريق', 'error');
-        }
+        });
     };
 
     const handleDeleteTeam = async () => {
-        if (!deleteTeamConfirm) return;
-        try {
-            await deleteDoc(doc(db, 'teams', deleteTeamConfirm.id));
-            showToast('تم حذف الفريق');
+        await deleteTeam(deleteTeamConfirm, () => {
             setDeleteTeamConfirm(null);
-        } catch {
-            showToast('فشل في حذف الفريق', 'error');
-        }
+        });
     };
 
     const resetTeamForm = () => {
@@ -110,45 +52,22 @@ export default function TeamsPage({ onBack }: { onBack?: () => void }) {
     // ──────────── Add/Remove Members ────────────
     const handleAddMember = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (!addingMemberTo || !newMemberName.trim()) return;
-
-        try {
-            await updateDoc(doc(db, 'teams', addingMemberTo.id), {
-                members: arrayUnion(newMemberName.trim()),
-                memberCount: (addingMemberTo.members?.length || 0) + 1,
-            });
-            showToast(`تمت إضافة "${newMemberName.trim()}" للفريق`);
+        await addMember(addingMemberTo, newMemberName, (updatedTeam) => {
             setNewMemberName('');
-            // Update local state
-            setAddingMemberTo(prev => prev ? {
-                ...prev,
-                members: [...(prev.members || []), newMemberName.trim()],
-                memberCount: (prev.members?.length || 0) + 1,
-            } : null);
-        } catch {
-            showToast('فشل في إضافة العضو', 'error');
-        }
+            setAddingMemberTo(updatedTeam);
+        });
     };
 
-    const handleRemoveMember = async (team: TeamData, memberName: string) => {
-        try {
-            const updatedMembers = (team.members || []).filter(m => m !== memberName);
-            await updateDoc(doc(db, 'teams', team.id), {
-                members: arrayRemove(memberName),
-                memberCount: updatedMembers.length,
-            });
-            showToast(`تمت إزالة "${memberName}"`);
-            // Update local state for the modal
+    const handleRemoveMember = async () => {
+        if (!removeMemberConfirm) return;
+        const { team, memberName } = removeMemberConfirm;
+
+        await removeMember(team, memberName, (updatedTeam) => {
             if (addingMemberTo?.id === team.id) {
-                setAddingMemberTo(prev => prev ? {
-                    ...prev,
-                    members: updatedMembers,
-                    memberCount: updatedMembers.length,
-                } : null);
+                setAddingMemberTo(updatedTeam);
             }
-        } catch {
-            showToast('فشل في إزالة العضو', 'error');
-        }
+            setRemoveMemberConfirm(null);
+        });
     };
 
     if (!user || !['super_admin', 'admin', 'leader'].includes(user.role)) {
@@ -170,6 +89,10 @@ export default function TeamsPage({ onBack }: { onBack?: () => void }) {
         );
     }
 
+    const filteredTeams = stageFilter === 'all'
+        ? teams
+        : teams.filter(t => t.stageId === stageFilter);
+
     return (
         <div dir="rtl" className="space-y-6">
             <SectionHeader
@@ -179,17 +102,34 @@ export default function TeamsPage({ onBack }: { onBack?: () => void }) {
                 action={(user?.role === 'admin' || user?.role === 'leader') && user?.stageId ? <StageBadge stageId={user.stageId} size="md" /> : undefined}
             />
 
-            {/* Create Team Button */}
-            <div className="flex justify-end">
-                <button onClick={() => setShowTeamModal(true)} className="btn btn-primary text-sm">
-                    <Plus className="w-4 h-4" />
-                    فريق جديد
-                </button>
+            {/* Create Team Button & Filter Component */}
+            <div className={`flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 w-full`}>
+                <div className="flex flex-wrap items-center gap-4">
+                    {user?.role === 'super_admin' && (
+                        <StageFilterBar
+                            active={stageFilter}
+                            onChange={setStageFilter}
+                            showAll={true}
+                        />
+                    )}
+                </div>
+
+                <div className="flex items-center gap-4 shrink-0">
+                    <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-surface border border-border/50 text-sm font-bold text-text-secondary w-full sm:w-auto justify-center">
+                        <Users className="w-4 h-4 text-primary" />
+                        <span>عدد الفرق:</span>
+                        <span className="text-text-primary bg-primary/20 text-primary-light border-primary/50 flex items-center justify-center w-6 h-6 rounded-full">{filteredTeams.length}</span>
+                    </div>
+                    <button onClick={() => setShowTeamModal(true)} className="btn btn-primary text-sm w-full sm:w-auto">
+                        <Plus className="w-4 h-4" />
+                        فريق جديد
+                    </button>
+                </div>
             </div>
 
             {/* Teams Grid */}
             <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                {teams.map(team => (
+                {filteredTeams.map(team => (
                     <motion.div
                         key={team.id}
                         layout
@@ -198,27 +138,27 @@ export default function TeamsPage({ onBack }: { onBack?: () => void }) {
                         className="glass-card glass-card-hover p-5"
                     >
                         {/* Team Header */}
-                        <div className="flex items-start justify-between mb-4">
-                            <div className="flex items-center gap-3">
-                                <div className="w-12 h-12 rounded-2xl gradient-primary flex items-center justify-center text-white font-black text-xl">
+                        <div className="flex items-start justify-between mb-4 gap-3">
+                            <div className="flex items-start sm:items-center gap-3 min-w-0">
+                                <div className="w-12 h-12 rounded-2xl gradient-primary flex items-center justify-center text-white font-black text-xl shrink-0 shadow-sm border border-white/10">
                                     {team.name.charAt(0)}
                                 </div>
-                                <div>
-                                    <h3 className="font-bold text-text-primary text-lg">{team.name}</h3>
-                                    <div className="flex items-center gap-3 mt-1">
-                                        <span className="flex items-center gap-1 text-xs text-text-muted">
+                                <div className="min-w-0">
+                                    <h3 className="font-bold text-text-primary text-base sm:text-lg truncate" title={team.name}>{team.name}</h3>
+                                    <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+                                        <span className="flex items-center gap-1 text-[11px] font-bold text-text-secondary bg-surface px-2 py-0.5 rounded-lg border border-border/50">
                                             <Trophy className="w-3 h-3 text-accent" />
                                             {team.totalPoints} نقطة
                                         </span>
-                                        <span className="flex items-center gap-1 text-xs text-text-muted">
-                                            <Users className="w-3 h-3" />
+                                        <span className="flex items-center gap-1 text-[11px] font-bold text-text-secondary bg-surface px-2 py-0.5 rounded-lg border border-border/50">
+                                            <Users className="w-3 h-3 text-primary" />
                                             {team.members?.length || 0} عضو
                                         </span>
-                                        <StageBadge stageId={team.stageId} />
+                                        {team.stageId && <StageBadge stageId={team.stageId} />}
                                     </div>
                                 </div>
                             </div>
-                            <div className="flex gap-1">
+                            <div className="flex flex-col gap-1 shrink-0 bg-surface/50 p-1 rounded-xl border border-border/50">
                                 <button
                                     onClick={() => {
                                         setEditingTeam(team);
@@ -229,14 +169,14 @@ export default function TeamsPage({ onBack }: { onBack?: () => void }) {
                                     className="p-1.5 rounded-lg hover:bg-primary/10 text-text-muted hover:text-primary transition-colors"
                                     title="تعديل"
                                 >
-                                    <Edit3 className="w-3.5 h-3.5" />
+                                    <Edit3 className="w-4 h-4" />
                                 </button>
                                 <button
                                     onClick={() => setDeleteTeamConfirm(team)}
                                     className="p-1.5 rounded-lg hover:bg-danger/10 text-text-muted hover:text-danger transition-colors"
                                     title="حذف"
                                 >
-                                    <Trash2 className="w-3.5 h-3.5" />
+                                    <Trash2 className="w-4 h-4" />
                                 </button>
                             </div>
                         </div>
@@ -271,7 +211,7 @@ export default function TeamsPage({ onBack }: { onBack?: () => void }) {
                                                 <span className="text-sm text-text-primary">{member}</span>
                                             </div>
                                             <button
-                                                onClick={() => handleRemoveMember(team, member)}
+                                                onClick={() => setRemoveMemberConfirm({ team, memberName: member })}
                                                 className="opacity-0 group-hover:opacity-100 p-1 rounded-md hover:bg-danger/10 text-text-muted hover:text-danger transition-all"
                                                 title="إزالة"
                                             >
@@ -288,7 +228,7 @@ export default function TeamsPage({ onBack }: { onBack?: () => void }) {
                 ))}
             </div>
 
-            {teams.length === 0 && (
+            {filteredTeams.length === 0 && (
                 <EmptyState
                     icon="🏆"
                     title="لا توجد فرق"
@@ -412,7 +352,7 @@ export default function TeamsPage({ onBack }: { onBack?: () => void }) {
                                                     <span className="text-sm text-text-primary font-bold">{member}</span>
                                                 </div>
                                                 <button
-                                                    onClick={() => handleRemoveMember(addingMemberTo, member)}
+                                                    onClick={() => setRemoveMemberConfirm({ team: addingMemberTo, memberName: member })}
                                                     className="p-1.5 rounded-lg hover:bg-danger/10 text-text-muted hover:text-danger transition-colors"
                                                     title="إزالة"
                                                 >
@@ -438,6 +378,17 @@ export default function TeamsPage({ onBack }: { onBack?: () => void }) {
                 onConfirm={handleDeleteTeam}
                 onCancel={() => setDeleteTeamConfirm(null)}
                 confirmText="حذف"
+                variant="danger"
+            />
+
+            {/* Remove Member Confirm */}
+            <ConfirmModal
+                isOpen={!!removeMemberConfirm}
+                title="إزالة العضو"
+                message={`هل أنت متأكد من إزالة "${removeMemberConfirm?.memberName}" من فريق "${removeMemberConfirm?.team.name}"؟`}
+                onConfirm={handleRemoveMember}
+                onCancel={() => setRemoveMemberConfirm(null)}
+                confirmText="إزالة"
                 variant="danger"
             />
         </div>
