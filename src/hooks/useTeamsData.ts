@@ -29,12 +29,21 @@ export function useTeamsData(user: any, showToast: (msg: string, type?: 'success
         return unsub;
     }, [user]);
 
-    const createAuditLog = async (
-        operation: 'create' | 'delete',
-        entityId: string,
-        entityName: string,
-        stageId?: string | null
-    ) => {
+    const createAuditLog = async ({
+        operation,
+        entityType,
+        entityId,
+        entityName,
+        stageId,
+        details,
+    }: {
+        operation: 'create' | 'delete';
+        entityType: 'team' | 'task' | 'member';
+        entityId: string;
+        entityName: string;
+        stageId?: string | null;
+        details?: string | null;
+    }) => {
         if (!user) return;
         const normalizedStageId = (stageId && stageId.trim()) || (user.stageId && user.stageId.trim()) || null;
 
@@ -42,7 +51,7 @@ export function useTeamsData(user: any, showToast: (msg: string, type?: 'success
             await addDoc(collection(db, 'logs'), {
                 kind: 'audit',
                 operation,
-                entityType: 'team',
+                entityType,
                 entityId,
                 entityName: entityName.trim() || 'غير معروف',
                 stageId: normalizedStageId,
@@ -50,6 +59,7 @@ export function useTeamsData(user: any, showToast: (msg: string, type?: 'success
                 actorName: user.name || null,
                 actorEmail: user.email || null,
                 actorRole: user.role || null,
+                details: details || null,
                 timestamp: serverTimestamp(),
                 source: 'client',
             });
@@ -101,8 +111,14 @@ export function useTeamsData(user: any, showToast: (msg: string, type?: 'success
                     createdAt: serverTimestamp(),
                     stageId: assignedStageId,
                 });
-                await createAuditLog('create', id, teamName.trim(), assignedStageId);
-                showToast('تم إنشاء الفريق بنجاح ✅');
+                await createAuditLog({
+                    operation: 'create',
+                    entityType: 'team',
+                    entityId: id,
+                    entityName: teamName.trim(),
+                    stageId: assignedStageId,
+                });
+                showToast(`تم إنشاء الفريق "${teamName.trim()}" بنجاح ✅`);
             }
             onSuccess();
         } catch (err: any) {
@@ -122,8 +138,14 @@ export function useTeamsData(user: any, showToast: (msg: string, type?: 'success
         }
         try {
             await deleteDoc(doc(db, 'teams', team.id));
-            await createAuditLog('delete', team.id, team.name, team.stageId || user?.stageId || null);
-            showToast('تم حذف الفريق');
+            await createAuditLog({
+                operation: 'delete',
+                entityType: 'team',
+                entityId: team.id,
+                entityName: team.name,
+                stageId: team.stageId || user?.stageId || null,
+            });
+            showToast(`تم حذف الفريق "${team.name}"`);
             onSuccess();
         } catch {
             showToast('فشل في حذف الفريق', 'error');
@@ -146,7 +168,15 @@ export function useTeamsData(user: any, showToast: (msg: string, type?: 'success
                 members: arrayUnion(memberName.trim()),
                 memberCount: (team.members?.length || 0) + 1,
             });
-            showToast(`تمت إضافة "${memberName.trim()}" للفريق`);
+            await createAuditLog({
+                operation: 'create',
+                entityType: 'member',
+                entityId: `${team.id}:${memberName.trim()}`,
+                entityName: memberName.trim(),
+                stageId: team.stageId || user?.stageId || null,
+                details: `داخل الفريق: ${team.name}`,
+            });
+            showToast(`تمت إضافة "${memberName.trim()}" إلى فريق "${team.name}"`);
 
             const updatedTeam = {
                 ...team,
@@ -174,7 +204,15 @@ export function useTeamsData(user: any, showToast: (msg: string, type?: 'success
                 members: arrayRemove(memberName),
                 memberCount: updatedMembers.length,
             });
-            showToast(`تمت إزالة "${memberName}"`);
+            await createAuditLog({
+                operation: 'delete',
+                entityType: 'member',
+                entityId: `${team.id}:${memberName}`,
+                entityName: memberName,
+                stageId: team.stageId || user?.stageId || null,
+                details: `من الفريق: ${team.name}`,
+            });
+            showToast(`تم حذف العضو "${memberName}" من فريق "${team.name}"`);
 
             const updatedTeam = {
                 ...team,
