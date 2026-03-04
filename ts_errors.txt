@@ -1,0 +1,15 @@
+src/components/Home.tsx(473,15): error TS2322: Type 'false | { opacity: number; scale: number; y: number; }' is not assignable to type 'TargetAndTransition | VariantLabels'.
+  Type 'boolean' is not assignable to type 'TargetAndTransition | VariantLabels'.
+src/components/ScoreRegistration.tsx(258,43): error TS2345: Argument of type '{ teamId: string; taskId: string; customNote: string; points: number; type: "earn" | "deduct"; targetType: string; source: "team"; registeredBy: string; registeredByName: string; stageId: string; ... 4 more ...; timestamp: number; }' is not assignable to parameter of type 'Omit<PendingScore, "id" | "synced">'.
+  Types of property 'targetType' are incompatible.
+    Type 'string' is not assignable to type '"team" | "member"'.
+src/components/ScoreRegistration.tsx(296,51): error TS2345: Argument of type '{ teamId: string; taskId: string; customNote: string; points: number; type: "earn" | "deduct"; targetType: string; source: "team"; registeredBy: string; registeredByName: string; stageId: string; ... 4 more ...; timestamp: number; }' is not assignable to parameter of type 'Omit<PendingScore, "id" | "synced">'.
+  Types of property 'targetType' are incompatible.
+    Type 'string' is not assignable to type '"team" | "member"'.
+src/services/firebase.ts(6,25): error TS2339: Property 'env' does not exist on type 'ImportMeta'.
+src/services/firebase.ts(7,29): error TS2339: Property 'env' does not exist on type 'ImportMeta'.
+src/services/firebase.ts(8,28): error TS2339: Property 'env' does not exist on type 'ImportMeta'.
+src/services/firebase.ts(9,32): error TS2339: Property 'env' does not exist on type 'ImportMeta'.
+src/services/firebase.ts(10,36): error TS2339: Property 'env' does not exist on type 'ImportMeta'.
+src/services/firebase.ts(11,24): error TS2339: Property 'env' does not exist on type 'ImportMeta'.
+src/services/firebase.ts(12,32): error TS2339: Property 'env' does not exist on type 'ImportMeta'.

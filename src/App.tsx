@@ -33,7 +33,7 @@ function isTabAllowed(tab: string, user: any): boolean {
     case 'admin':
       return !!user && user.role === 'super_admin';
     case 'activities':
-      return !!user;
+      return !!user && ['super_admin', 'admin', 'leader'].includes(user.role);
     case 'home':
     case 'leaderboard':
     case 'tasks':
@@ -105,7 +105,7 @@ function AppContent() {
           ? <SuperAdminPanel onBack={() => handleNavigate('home')} />
           : <Home onNavigate={handleNavigate} />;
       case 'activities':
-        return user
+        return user && ['super_admin', 'admin', 'leader'].includes(user.role)
           ? <RecentActivitiesPage onBack={() => handleNavigate('home')} />
           : <Home onNavigate={handleNavigate} />;
       default:

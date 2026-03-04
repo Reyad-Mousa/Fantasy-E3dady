@@ -10,3 +10,5 @@ coverage/
 auth-import.json
 firestore-users.json
 scripts/output/
+
+serviceAccountKey.json

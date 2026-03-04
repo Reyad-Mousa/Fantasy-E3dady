@@ -12,6 +12,7 @@
     "lint": "tsc --noEmit",
     "import-accounts": "tsx import-accounts.ts",
     "enforce-stage-leaders": "tsx scripts/enforce-stage-leaders.ts",
+    "sync-user-stage-claims": "tsx scripts/sync-user-stage-claims.ts",
     "deploy": "vite build && firebase deploy"
   },
   "dependencies": {

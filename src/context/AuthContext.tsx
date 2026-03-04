@@ -40,49 +40,77 @@ const parseRole = (value: unknown): Role | null => {
   return null;
 };
 
+const asNonEmptyString = (value: unknown): string | null => {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+};
+
+interface ClaimsProfile {
+  role: Role | null;
+  teamId: string | null;
+  stageId: string | null;
+  stageName: string | null;
+}
+
+const readClaimsProfile = async (firebaseUser: FirebaseUser, forceRefresh = false): Promise<ClaimsProfile> => {
+  const tokenResult = await getIdTokenResult(firebaseUser, forceRefresh);
+  return {
+    role: parseRole(tokenResult.claims.role),
+    teamId: asNonEmptyString(tokenResult.claims.teamId),
+    stageId: asNonEmptyString(tokenResult.claims.stageId),
+    stageName: asNonEmptyString(tokenResult.claims.stageName),
+  };
+};
+
 /**
  * Resolve the user's role. Priority:
  * 1. Firebase Auth custom claims (if set via Admin SDK)
  * 2. Firestore /users/{uid}.role (fallback — always works)
  */
 const toAppUser = async (firebaseUser: FirebaseUser): Promise<User | null> => {
-  let role: Role | null = null;
-  let teamId: string | null = null;
-  let stageId: string | null = null;
-  let stageName: string | null = null;
+  let claimsProfile: ClaimsProfile = {
+    role: null,
+    teamId: null,
+    stageId: null,
+    stageName: null,
+  };
+  let userDocData: Record<string, unknown> | null = null;
   let displayName = firebaseUser.displayName ?? firebaseUser.email?.split('@')[0] ?? 'مستخدم';
 
   // 1. Try custom claims first
   try {
-    const tokenResult = await getIdTokenResult(firebaseUser);
-    role = parseRole(tokenResult.claims.role);
-    teamId = (tokenResult.claims.teamId as string) ?? null;
-    stageId = (tokenResult.claims.stageId as string) ?? null;
-    stageName = (tokenResult.claims.stageName as string) ?? null;
+    claimsProfile = await readClaimsProfile(firebaseUser);
+    const stageScopedRole = claimsProfile.role === 'admin' || claimsProfile.role === 'leader';
+
+    // Refresh stale token once for stage-scoped roles when stage claim is missing.
+    if (stageScopedRole && !claimsProfile.stageId) {
+      claimsProfile = await readClaimsProfile(firebaseUser, true);
+    }
   } catch {
     // claims not available
   }
 
-  // 2. Fallback: read from Firestore
-  if (!role) {
-    try {
-      const userDoc = await getDoc(doc(db, 'users', firebaseUser.uid));
-      if (userDoc.exists()) {
-        const data = userDoc.data();
-        role = parseRole(data.role);
-        teamId = data.teamId ?? null;
-        stageId = data.stageId ?? null;
-        stageName = data.stageName ?? null;
-        if (data.name) displayName = data.name;
-      }
-    } catch (err) {
-      console.warn('Failed to fetch user doc from Firestore:', err);
+  // 2. Read from Firestore and use as fallback for missing claim fields
+  try {
+    const userDoc = await getDoc(doc(db, 'users', firebaseUser.uid));
+    if (userDoc.exists()) {
+      userDocData = userDoc.data() as Record<string, unknown>;
+      const nameFromDoc = asNonEmptyString(userDocData.name);
+      if (nameFromDoc) displayName = nameFromDoc;
     }
+  } catch (err) {
+    console.warn('Failed to fetch user doc from Firestore:', err);
   }
 
+  const role = claimsProfile.role ?? parseRole(userDocData?.role);
   if (!role) {
     return null;
   }
+
+  const teamId = claimsProfile.teamId ?? asNonEmptyString(userDocData?.teamId);
+  const stageId = claimsProfile.stageId ?? asNonEmptyString(userDocData?.stageId);
+  const stageName = claimsProfile.stageName ?? asNonEmptyString(userDocData?.stageName);
 
   return {
     uid: firebaseUser.uid,

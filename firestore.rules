@@ -117,8 +117,11 @@ service cloud.firestore {
     }
 
     match /logs/{logId} {
-      allow read: if isAuthenticated();
-      allow create: if isAuthenticated();
+      allow read: if isAuthenticated() && (
+        isSuperAdmin() ||
+        ((isAdmin() || isLeader()) && isSameStage(resource.data.stageId))
+      );
+      allow create: if false;
       allow update, delete: if false;
     }
   }

@@ -96,6 +96,7 @@ export default function Leaderboard({ onBack }: { onBack?: () => void }) {
         const members = membersByStage[stageId] || [];
         const isTeams = boardType === 'teams';
         const list = isTeams ? teams : members;
+        const totalStagePoints = list.reduce((sum, item: any) => sum + (item.totalPoints || 0), 0);
 
         const top5 = (isTeams ? teams : members).slice(0, 5).map((item: any, i) => ({
             name: isTeams ? item.name : item.memberName,
@@ -177,9 +178,16 @@ export default function Leaderboard({ onBack }: { onBack?: () => void }) {
                                     )}
                                 </div>
 
-                                <span className={`font-black ${isRank1 ? 'text-xl' : 'text-text-muted'}`} style={isRank1 ? { color: stage.color } : {}}>
-                                    {item.totalPoints}
-                                </span>
+                                <div className="text-right flex flex-col items-end justify-center">
+                                    <span className={`font-black ${isRank1 ? 'text-xl' : 'text-base text-text-primary'}`} style={isRank1 ? { color: stage.color } : {}}>
+                                        {item.totalPoints}
+                                    </span>
+                                    {totalStagePoints > 0 && (
+                                        <span className="text-[10px] text-text-muted font-bold mt-0.5" dir="ltr">
+                                            {((item.totalPoints / totalStagePoints) * 100).toFixed(1)}%
+                                        </span>
+                                    )}
+                                </div>
                             </div>
                         );
                     })}
@@ -303,13 +311,20 @@ export default function Leaderboard({ onBack }: { onBack?: () => void }) {
                                                             </div>
                                                             <span className="font-bold text-text-primary text-sm">{member.memberName}</span>
                                                         </div>
-                                                        <span className={`font-black ${rank === 1 ? 'text-amber-500' :
-                                                            rank === 2 ? 'text-slate-400' :
-                                                                rank === 3 ? 'text-amber-700' :
-                                                                    'text-text-secondary'
-                                                            }`}>
-                                                            {member.totalPoints}
-                                                        </span>
+                                                        <div className="text-right flex flex-col items-end justify-center">
+                                                            <span className={`font-black ${rank === 1 ? 'text-amber-500' :
+                                                                rank === 2 ? 'text-slate-400' :
+                                                                    rank === 3 ? 'text-amber-700' :
+                                                                        'text-text-secondary'
+                                                                }`}>
+                                                                {member.totalPoints}
+                                                            </span>
+                                                            {selectedTeam.totalPoints > 0 && (
+                                                                <span className="text-[10px] text-text-muted/70 font-bold mt-0.5" dir="ltr">
+                                                                    {((member.totalPoints / selectedTeam.totalPoints) * 100).toFixed(1)}%
+                                                                </span>
+                                                            )}
+                                                        </div>
                                                     </div>
                                                 );
                                             })}

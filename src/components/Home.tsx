@@ -392,9 +392,9 @@ export default function Home({ onNavigate }: HomeProps) {
                             <div className="flex-1 min-w-0">
                               <h4 className="text-sm font-bold text-text-primary truncate transition-colors group-hover:text-white">{team.name}</h4>
                             </div>
-                            <div className="text-right">
+                            <div className="text-right flex flex-col items-end justify-center">
                               <div className="flex items-center gap-1.5 opacity-80 group-hover:opacity-100 transition-opacity">
-                                <div className="text-sm font-black text-white">{team.totalPoints || 0}</div>
+                                <div className="text-base font-black text-white">{team.totalPoints || 0}</div>
                                 {(team.members && team.members.length > 0) && (
                                   <div className="flex items-center gap-1 text-[10px] text-text-muted bg-white/5 px-1.5 py-0.5 rounded border border-white/5">
                                     <Users className="w-3 h-3 text-text-muted" />
@@ -402,6 +402,11 @@ export default function Home({ onNavigate }: HomeProps) {
                                   </div>
                                 )}
                               </div>
+                              {stageData && stageData.points > 0 && (
+                                <div className="text-[10px] text-text-muted font-bold opacity-60 group-hover:opacity-100 transition-opacity mt-0.5" dir="ltr">
+                                  {(((team.totalPoints || 0) / stageData.points) * 100).toFixed(1)}%
+                                </div>
+                              )}
                             </div>
                           </div>
                         ))
@@ -469,8 +474,8 @@ export default function Home({ onNavigate }: HomeProps) {
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm" onClick={() => setSelectedTeam(null)}>
             <motion.div
               initial={animationsEnabled ? { opacity: 0, scale: 0.95, y: 10 } : false}
-              animate={animationsEnabled ? { opacity: 1, scale: 1, y: 0 } : false}
-              exit={animationsEnabled ? { opacity: 0, scale: 0.95, y: 10 } : false}
+              animate={animationsEnabled ? { opacity: 1, scale: 1, y: 0 } : undefined}
+              exit={animationsEnabled ? { opacity: 0, scale: 0.95, y: 10 } : undefined}
               className="bg-surface-card border border-white/10 rounded-3xl p-6 w-full max-w-sm sm:max-w-md shadow-2xl relative"
               onClick={e => e.stopPropagation()}
             >
@@ -526,11 +531,16 @@ export default function Home({ onNavigate }: HomeProps) {
                         <div className="flex-1 min-w-0">
                           <span className="font-bold text-text-primary text-sm truncate block">{member.name}</span>
                         </div>
-                        <div className="text-right shrink-0">
+                        <div className="text-right shrink-0 flex flex-col items-end">
                           <span className="text-sm font-black text-white flex items-center gap-1 px-2 py-0.5 bg-white/5 rounded-md border border-white/5">
                             {member.points}
                             <span className="text-[10px] text-text-muted font-bold">نقطة</span>
                           </span>
+                          {selectedTeam.totalPoints > 0 && (
+                            <span className="text-[10px] text-text-muted/60 font-bold mt-1 pr-1" dir="ltr">
+                              {((member.points / selectedTeam.totalPoints) * 100).toFixed(1)}%
+                            </span>
+                          )}
                         </div>
                       </div>
                     ))

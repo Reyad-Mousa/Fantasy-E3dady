@@ -5,8 +5,8 @@ import { useAuth, canRegisterScores } from '@/context/AuthContext';
 import { addPendingScore, getPendingSyncCount } from '@/services/offlineDb';
 import { isOnline, syncPendingScores } from '@/services/syncService';
 import { SectionHeader, SyncBadge, useOnlineStatus, useToast } from './ui/SharedUI';
-import { motion } from 'motion/react';
-import { Check, Clock, Plus, RefreshCw, TrendingDown, TrendingUp, UserRound, Users } from 'lucide-react';
+import { motion, AnimatePresence } from 'motion/react';
+import { Check, Clock, Plus, RefreshCw, TrendingDown, TrendingUp, UserRound, Users, X } from 'lucide-react';
 import StageBadge from './StageBadge';
 
 type TargetType = 'team' | 'member';
@@ -27,6 +27,7 @@ interface Score {
     memberUserId?: string | null;
     memberName?: string | null;
     applyToTeamTotal?: boolean;
+    customNote?: string | null;
 }
 
 interface Team {
@@ -74,222 +75,252 @@ export default function ScoreRegistration({ onBack }: { onBack?: () => void }) {
     const [memberUsers, setMemberUsers] = useState<MemberUser[]>([]);
     const [pendingCount, setPendingCount] = useState(0);
     const [syncing, setSyncing] = useState(false);
+    const [submitting, setSubmitting] = useState(false);
 
     const [selectedTeam, setSelectedTeam] = useState('');
     const [selectedTask, setSelectedTask] = useState('');
     const [scoreType, setScoreType] = useState<'earn' | 'deduct'>('earn');
     const [scoreSource] = useState<'team'>('team');
     const [customPoints, setCustomPoints] = useState('');
+    // NEW: custom note — required when no task selected
+    const [customNote, setCustomNote] = useState('');
     const [targetType, setTargetType] = useState<TargetType>('team');
-    const [selectedMemberKey, setSelectedMemberKey] = useState('');
+    // CHANGED: multi-select members
+    const [selectedMemberKeys, setSelectedMemberKeys] = useState<string[]>([]);
+
+    const stageScopedRole = user?.role === 'admin' || user?.role === 'leader';
+    const missingStageScope = Boolean(stageScopedRole && !user?.stageId);
 
     useEffect(() => {
         if (!user) return;
-        const stageFilter = (user.role === 'admin' || user.role === 'leader') && user.stageId
-            ? where('stageId', '==', user.stageId)
-            : null;
+        const currentStageScopedRole = user.role === 'admin' || user.role === 'leader';
+        if (currentStageScopedRole && !user.stageId) {
+            setTeams([]); setScores([]); setTasks([]); setMemberUsers([]);
+            return;
+        }
+        const stageFilter = currentStageScopedRole && user.stageId
+            ? where('stageId', '==', user.stageId) : null;
 
-        const teamsQuery = stageFilter
+        const teamsQ = stageFilter
             ? query(collection(db, 'teams'), stageFilter)
             : collection(db, 'teams');
-        const unsub1 = onSnapshot(teamsQuery, (snap) => {
-            setTeams(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Team)));
-        }, (err) => {
-            console.error('Teams fetch error:', err);
-        });
+        const u1 = onSnapshot(teamsQ, snap =>
+            setTeams(snap.docs.map(d => ({ id: d.id, ...d.data() } as Team))),
+            err => console.error('Teams:', err));
 
-        const unsub2 = onSnapshot(query(collection(db, 'tasks')), (snap) => {
-            setTasks(snap.docs
-                .map((d) => ({ id: d.id, ...d.data() } as Task))
-                .filter((t) => (t as any).status === 'active' && t.type === 'team'));
-        }, (err) => {
-            console.error('Tasks fetch error:', err);
-        });
+        const u2 = onSnapshot(query(collection(db, 'tasks')), snap =>
+            setTasks(snap.docs.map(d => ({ id: d.id, ...d.data() } as Task))
+                .filter(t => (t as any).status === 'active' && t.type === 'team')),
+            err => console.error('Tasks:', err));
 
-        const scoresQuery = stageFilter
+        const scoresQ = stageFilter
             ? query(collection(db, 'scores'), stageFilter, orderBy('timestamp', 'desc'))
             : query(collection(db, 'scores'), orderBy('timestamp', 'desc'));
-        const unsub3 = onSnapshot(scoresQuery, (snap) => {
-            setScores(snap.docs.slice(0, 20).map((d) => ({ id: d.id, ...d.data() } as Score)));
-        }, (err) => {
-            console.error('Scores fetch error:', err);
-        });
+        const u3 = onSnapshot(scoresQ, snap =>
+            setScores(snap.docs.slice(0, 20).map(d => ({ id: d.id, ...d.data() } as Score))),
+            err => console.error('Scores:', err));
 
-        const unsub4 = onSnapshot(collection(db, 'users'), (snap) => {
-            const raw = snap.docs.map((d) => ({ id: d.id, ...d.data() } as MemberUser));
-            setMemberUsers(raw.filter((u) => u.role === 'member'));
-        }, () => {
-            // If users collection is not readable for this role, fallback to team member names only.
-            setMemberUsers([]);
-        });
+        const u4 = onSnapshot(collection(db, 'users'), snap => {
+            setMemberUsers(snap.docs.map(d => ({ id: d.id, ...d.data() } as MemberUser))
+                .filter(u => u.role === 'member'));
+        }, () => setMemberUsers([]));
 
-        return () => {
-            unsub1();
-            unsub2();
-            unsub3();
-            unsub4();
-        };
+        return () => { u1(); u2(); u3(); u4(); };
     }, [user]);
 
     useEffect(() => {
-        const interval = setInterval(async () => {
-            const count = await getPendingSyncCount();
-            setPendingCount(count);
-        }, 2000);
-        return () => clearInterval(interval);
+        const iv = setInterval(async () => setPendingCount(await getPendingSyncCount()), 2000);
+        return () => clearInterval(iv);
     }, []);
 
     const membersByTeam = useMemo(() => {
-        const teamIds = new Set(teams.map((t) => t.id));
+        const teamIds = new Set(teams.map(t => t.id));
         const map: Record<string, MemberOption[]> = {};
+        for (const id of teamIds) map[id] = [];
 
-        for (const teamId of teamIds) map[teamId] = [];
-
-        // 1) Members from users docs
-        for (const member of memberUsers) {
-            if (!member.teamId || !teamIds.has(member.teamId)) continue;
-            const name = (member.name || '').trim();
+        for (const m of memberUsers) {
+            if (!m.teamId || !teamIds.has(m.teamId)) continue;
+            const name = (m.name || '').trim();
             if (!name) continue;
-            map[member.teamId].push({
-                key: `u:${member.id}`,
-                userId: member.id,
-                name,
-                teamId: member.teamId,
-                source: 'user',
-            });
+            map[m.teamId].push({ key: `u:${m.id}`, userId: m.id, name, teamId: m.teamId, source: 'user' });
         }
 
-        // 2) Members from teams.members array (dedupe against users by normalized name)
         for (const team of teams) {
-            const existing = new Set((map[team.id] || []).map((m) => normalizeName(m.name)));
-            const names = team.members || [];
-            for (const rawName of names) {
+            const existing = new Set((map[team.id] || []).map(m => normalizeName(m.name)));
+            for (const rawName of (team.members || [])) {
                 const name = String(rawName || '').trim();
                 if (!name) continue;
-                const normalized = normalizeName(name);
-                if (existing.has(normalized)) continue;
-                existing.add(normalized);
-                map[team.id].push({
-                    key: `n:${team.id}:${normalized}`,
-                    userId: null,
-                    name,
-                    teamId: team.id,
-                    source: 'team_list',
-                });
+                const norm = normalizeName(name);
+                if (existing.has(norm)) continue;
+                existing.add(norm);
+                map[team.id].push({ key: `n:${team.id}:${norm}`, userId: null, name, teamId: team.id, source: 'team_list' });
             }
         }
 
-        for (const teamId of Object.keys(map)) {
-            map[teamId].sort((a, b) => a.name.localeCompare(b.name, 'ar'));
-        }
+        for (const id of Object.keys(map))
+            map[id].sort((a, b) => a.name.localeCompare(b.name, 'ar'));
 
         return map;
     }, [teams, memberUsers]);
 
-    const availableMembers = useMemo(() => {
-        if (!selectedTeam) return [];
-        return membersByTeam[selectedTeam] || [];
-    }, [membersByTeam, selectedTeam]);
+    const availableMembers = useMemo(() =>
+        selectedTeam ? (membersByTeam[selectedTeam] || []) : [],
+        [membersByTeam, selectedTeam]);
 
-    const teamsForSelection = useMemo(() => {
-        return [...teams].sort((a, b) => (a.name || '').localeCompare(b.name || '', 'ar'));
-    }, [teams]);
+    const selectedMembers = useMemo(() =>
+        availableMembers.filter(m => selectedMemberKeys.includes(m.key)),
+        [availableMembers, selectedMemberKeys]);
 
-    const selectedMember = useMemo(() => {
-        if (!selectedMemberKey) return null;
-        return availableMembers.find((m) => m.key === selectedMemberKey) || null;
-    }, [availableMembers, selectedMemberKey]);
+    const teamsForSelection = useMemo(() =>
+        [...teams].sort((a, b) => (a.name || '').localeCompare(b.name || '', 'ar')),
+        [teams]);
 
-    const getSelectedTask = () => tasks.find((t) => t.id === selectedTask);
-    const getSelectedTeam = () => teams.find((t) => t.id === selectedTeam);
+    const getSelectedTask = () => tasks.find(t => t.id === selectedTask);
+    const getSelectedTeam = () => teams.find(t => t.id === selectedTeam);
 
-    const getPointsPreview = () => {
+    const getPoints = () => {
         if (customPoints) return Number(customPoints);
-        const task = getSelectedTask();
-        if (!task) return 0;
-        return scoreType === 'earn' ? task.points : -task.points;
+        return getSelectedTask()?.points || 0;
     };
+
+    const noTaskSelected = !selectedTask;
+
+    const toggleMember = (key: string) => {
+        setSelectedMemberKeys(prev =>
+            prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key]
+        );
+    };
+
+    const selectAllMembers = () =>
+        setSelectedMemberKeys(availableMembers.map(m => m.key));
+
+    const clearMembers = () => setSelectedMemberKeys([]);
 
     const resetForm = () => {
         setSelectedTeam('');
         setSelectedTask('');
         setCustomPoints('');
-        setSelectedMemberKey('');
+        setCustomNote('');
+        setSelectedMemberKeys([]);
         setTargetType('team');
     };
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
         if (!user || !canRegisterScores(user.role)) return;
+        if (missingStageScope) { showToast('لا يمكن تسجيل النقاط قبل تعيين المرحلة', 'error'); return; }
 
-        const points = getPointsPreview();
+        const points = getPoints();
         if (points === 0) return;
         if (!selectedTeam) return;
-        if (targetType === 'member' && !selectedMember) {
-            showToast('اختر الفرد أولًا', 'error');
+
+        // Validate: if no task → note is required
+        if (noTaskSelected && !customNote.trim()) {
+            showToast('اكتب سبب / اسم المهمة أولاً', 'error');
             return;
         }
 
-        const scoreData = {
-            teamId: selectedTeam,
-            taskId: selectedTask || 'custom',
-            points: Math.abs(points),
-            type: scoreType,
-            targetType,
-            source: scoreSource,
-            registeredBy: user.uid,
-            registeredByName: user.name,
-            stageId: getSelectedTeam()?.stageId || user.stageId || null,
-            memberKey: targetType === 'member' ? selectedMember?.key || null : null,
-            memberUserId: targetType === 'member' ? selectedMember?.userId || null : null,
-            memberName: targetType === 'member' ? selectedMember?.name || null : null,
-            applyToTeamTotal: true,
-            timestamp: Date.now(),
-        };
+        if (targetType === 'member' && selectedMembers.length === 0) {
+            showToast('اختر فرداً واحداً على الأقل', 'error');
+            return;
+        }
 
+        setSubmitting(true);
         const pointChange = scoreType === 'earn' ? Math.abs(points) : -Math.abs(points);
+        const teamDoc = getSelectedTeam();
+        const teamMultiplier = availableMembers.length > 0 ? availableMembers.length : 1;
 
         try {
-            if (isOnline()) {
-                await addDoc(collection(db, 'scores'), {
-                    ...scoreData,
-                    timestamp: serverTimestamp(),
-                    syncedAt: serverTimestamp(),
-                    pendingSync: false,
-                });
+            if (targetType === 'team') {
+                const totalTeamPoints = Math.abs(points) * teamMultiplier;
+                const totalTeamPointChange = scoreType === 'earn' ? totalTeamPoints : -totalTeamPoints;
 
-                await updateDoc(doc(db, 'teams', selectedTeam), {
-                    totalPoints: increment(pointChange),
-                });
+                // Single team score
+                const scoreData = {
+                    teamId: selectedTeam,
+                    taskId: selectedTask || 'custom',
+                    customNote: noTaskSelected ? customNote.trim() : null,
+                    points: totalTeamPoints,
+                    type: scoreType,
+                    targetType: 'team' as TargetType,
+                    source: scoreSource,
+                    registeredBy: user.uid,
+                    registeredByName: user.name,
+                    stageId: teamDoc?.stageId || user.stageId || null,
+                    memberKey: null,
+                    memberUserId: null,
+                    memberName: null,
+                    applyToTeamTotal: true,
+                    timestamp: Date.now(),
+                };
 
-                if (targetType === 'member' && selectedMember?.key) {
-                    await setDoc(doc(db, 'member_stats', selectedMember.key), {
-                        memberKey: selectedMember.key,
-                        memberUserId: selectedMember.userId,
-                        memberName: selectedMember.name,
-                        teamId: selectedTeam,
-                        stageId: user.stageId || null,
-                        totalPoints: increment(pointChange),
-                        updatedAt: serverTimestamp(),
-                    }, { merge: true });
+                if (isOnline()) {
+                    await addDoc(collection(db, 'scores'), { ...scoreData, timestamp: serverTimestamp(), syncedAt: serverTimestamp(), pendingSync: false });
+                    await updateDoc(doc(db, 'teams', selectedTeam), { totalPoints: increment(totalTeamPointChange) });
+                    showToast('✅ تم تسجيل النقاط بنجاح');
+                } else {
+                    await addPendingScore(scoreData);
+                    showToast('⚠️ تم الحفظ محلياً — سيتم المزامنة عند الاتصال', 'warning');
                 }
 
-                showToast('✅ تم تسجيل النقاط بنجاح');
             } else {
-                await addPendingScore(scoreData);
-                showToast('⚠️ تم الحفظ محلياً — سيتم المزامنة عند الاتصال', 'warning');
+                // Multi-member scores — one doc per member
+                const results = await Promise.allSettled(
+                    selectedMembers.map(async (member) => {
+                        const scoreData = {
+                            teamId: selectedTeam,
+                            taskId: selectedTask || 'custom',
+                            customNote: noTaskSelected ? customNote.trim() : null,
+                            points: Math.abs(points),
+                            type: scoreType,
+                            targetType: 'member' as TargetType,
+                            source: scoreSource,
+                            registeredBy: user.uid,
+                            registeredByName: user.name,
+                            stageId: teamDoc?.stageId || user.stageId || null,
+                            memberKey: member.key,
+                            memberUserId: member.userId,
+                            memberName: member.name,
+                            applyToTeamTotal: true,
+                            timestamp: Date.now(),
+                        };
+
+                        if (isOnline()) {
+                            await addDoc(collection(db, 'scores'), { ...scoreData, timestamp: serverTimestamp(), syncedAt: serverTimestamp(), pendingSync: false });
+                            await setDoc(doc(db, 'member_stats', member.key), {
+                                memberKey: member.key,
+                                memberUserId: member.userId,
+                                memberName: member.name,
+                                teamId: selectedTeam,
+                                stageId: user.stageId || null,
+                                totalPoints: increment(pointChange),
+                                updatedAt: serverTimestamp(),
+                            }, { merge: true });
+                        } else {
+                            await addPendingScore(scoreData);
+                        }
+                    })
+                );
+
+                // Update team total once (points × number of members)
+                if (isOnline()) {
+                    await updateDoc(doc(db, 'teams', selectedTeam), {
+                        totalPoints: increment(pointChange * selectedMembers.length),
+                    });
+                    const failed = results.filter(r => r.status === 'rejected').length;
+                    if (failed === 0) showToast(`✅ تم تسجيل النقاط لـ ${selectedMembers.length} فرد`);
+                    else showToast(`تم ${selectedMembers.length - failed} من ${selectedMembers.length} — فشل ${failed}`, 'warning');
+                } else {
+                    showToast('⚠️ تم الحفظ محلياً للأفراد المختارين', 'warning');
+                }
             }
 
             resetForm();
         } catch (err) {
-            console.error('Score registration error:', err);
-            try {
-                await addPendingScore(scoreData);
-                showToast('تم الحفظ محلياً كاحتياط', 'warning');
-                resetForm();
-            } catch {
-                showToast('فشل في تسجيل النقاط', 'error');
-            }
+            console.error(err);
+            showToast('فشل في تسجيل النقاط', 'error');
+        } finally {
+            setSubmitting(false);
         }
     };
 
@@ -298,21 +329,16 @@ export default function ScoreRegistration({ onBack }: { onBack?: () => void }) {
         try {
             const synced = await syncPendingScores();
             showToast(`✅ تم مزامنة ${synced} سجل`, 'success');
-        } catch {
-            showToast('فشل في المزامنة', 'error');
-        }
+        } catch { showToast('فشل في المزامنة', 'error'); }
         setSyncing(false);
     };
 
-    const hasVisibleTeams = teamsForSelection.length > 0;
-    const stageScopedRole = user.role === 'admin' || user.role === 'leader';
-    const missingStageScope = stageScopedRole && !user.stageId;
-    const noMembersForSelectedTeam = targetType === 'member' && selectedTeam && availableMembers.length === 0;
     const canSubmit = Boolean(
-        hasVisibleTeams &&
+        !missingStageScope &&
+        teamsForSelection.length > 0 &&
         selectedTeam &&
-        (selectedTask || customPoints) &&
-        (targetType === 'team' || selectedMember)
+        (selectedTask || (customPoints && customNote.trim())) &&
+        (targetType === 'team' || selectedMembers.length > 0)
     );
 
     if (!user || !canRegisterScores(user.role)) {
@@ -325,231 +351,359 @@ export default function ScoreRegistration({ onBack }: { onBack?: () => void }) {
         );
     }
 
+    const points = getPoints();
+    const pointChange = scoreType === 'earn' ? points : -points;
+
     return (
-        <div dir="rtl" className="space-y-6">
+        <div dir="rtl" className="space-y-4 sm:space-y-6">
             <SectionHeader
                 title="تسجيل النقاط"
-                subtitle={user?.role === 'leader'
-                    ? 'تسجيل نقاط فردية أو للفرق داخل مرحلتك'
-                    : 'تسجيل نقاط فردية أو للفرق (أونلاين/أوفلاين)'}
+                subtitle={user?.role === 'leader' ? 'تسجيل نقاط فردية أو للفرق' : 'تسجيل نقاط فردية أو للفرق (أونلاين/أوفلاين)'}
                 onBack={onBack}
                 action={
-                    <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-2 sm:gap-3">
                         <StageBadge stageId={user?.stageId} size="md" />
                         {pendingCount > 0 && (
-                            <button
-                                onClick={handleSync}
-                                disabled={syncing || !online}
-                                className="btn btn-accent text-sm"
-                            >
+                            <button onClick={handleSync} disabled={syncing || !online} className="btn btn-accent text-xs sm:text-sm">
                                 {syncing ? <div className="spinner !w-4 !h-4" /> : <RefreshCw className="w-4 h-4" />}
-                                مزامنة ({pendingCount})
+                                <span className="hidden xs:inline">مزامنة</span> ({pendingCount})
                             </button>
                         )}
                     </div>
                 }
             />
 
-            <div className="grid lg:grid-cols-5 gap-6">
+            {missingStageScope && (
+                <div className="glass-card border border-danger/30 bg-danger/5 p-4">
+                    <p className="text-sm font-bold text-text-primary mb-1">تعذر تفعيل تسجيل النقاط</p>
+                    <p className="text-xs text-text-secondary">حسابك لا يحتوي على مرحلة. تواصل مع المشرف العام.</p>
+                </div>
+            )}
+
+            <div className="grid lg:grid-cols-5 gap-4 sm:gap-6">
+
+                {/* ── FORM ── */}
                 <div className="lg:col-span-2">
-                    <form onSubmit={handleSubmit} className="glass-card p-6 space-y-5">
-                        <h3 className="font-bold text-text-primary flex items-center gap-2">
-                            <Plus className="w-5 h-5 text-primary" />
-                            تسجيل جديد
-                        </h3>
+                    <form onSubmit={handleSubmit} className="glass-card p-4 sm:p-6 space-y-4 sm:space-y-5">
+                        <fieldset disabled={missingStageScope || submitting} className={missingStageScope ? 'opacity-60 pointer-events-none' : ''}>
 
-                        <div className="space-y-2">
-                            <label className="text-xs font-bold text-text-secondary">نوع التسجيل</label>
-                            <div className="grid grid-cols-2 gap-3">
-                                <button
-                                    type="button"
-                                    onClick={() => {
-                                        setTargetType('team');
-                                        setSelectedMemberKey('');
-                                    }}
-                                    className={`p-3 rounded-xl border text-sm font-bold flex items-center justify-center gap-2 transition-all ${targetType === 'team' ? 'border-primary bg-primary/10 text-primary-light' : 'border-border text-text-secondary'}`}
-                                >
-                                    <Users className="w-4 h-4" />
-                                    نقاط لفريق
-                                </button>
-                                <button
-                                    type="button"
-                                    onClick={() => setTargetType('member')}
-                                    className={`p-3 rounded-xl border text-sm font-bold flex items-center justify-center gap-2 transition-all ${targetType === 'member' ? 'border-accent bg-accent/10 text-accent-light' : 'border-border text-text-secondary'}`}
-                                >
-                                    <UserRound className="w-4 h-4" />
-                                    نقاط لفرد
-                                </button>
-                            </div>
-                        </div>
+                            <h3 className="font-bold text-text-primary flex items-center gap-2 mb-4">
+                                <Plus className="w-5 h-5 text-primary" />
+                                تسجيل جديد
+                            </h3>
 
-                        <div className="space-y-2">
-                            <label className="text-xs font-bold text-text-secondary">الفريق</label>
-                            <select
-                                required
-                                value={selectedTeam}
-                                onChange={(e) => {
-                                    setSelectedTeam(e.target.value);
-                                    setSelectedMemberKey('');
-                                }}
-                                className="select-field"
-                            >
-                                <option value="">اختر الفريق</option>
-                                {teamsForSelection.map((team) => (
-                                    <option key={team.id} value={team.id}>{team.name}</option>
-                                ))}
-                            </select>
-                        </div>
-
-                        {targetType === 'member' && (
+                            {/* Target type */}
                             <div className="space-y-2">
-                                <label className="text-xs font-bold text-text-secondary">الفرد</label>
-                                <select
-                                    required
-                                    value={selectedMemberKey}
-                                    onChange={(e) => setSelectedMemberKey(e.target.value)}
-                                    className="select-field"
-                                    disabled={!selectedTeam}
-                                >
-                                    <option value="">{selectedTeam ? 'اختر الفرد' : 'اختر الفريق أولًا'}</option>
-                                    {availableMembers.map((member) => (
-                                        <option key={member.key} value={member.key}>
-                                            {member.name}{member.source === 'team_list' ? ' (من قائمة الفريق)' : ''}
-                                        </option>
+                                <label className="text-xs font-bold text-text-secondary">نوع التسجيل</label>
+                                <div className="grid grid-cols-2 gap-2 sm:gap-3">
+                                    <button type="button"
+                                        onClick={() => { setTargetType('team'); setSelectedMemberKeys([]); }}
+                                        className={`p-2.5 sm:p-3 rounded-xl border text-xs sm:text-sm font-bold flex items-center justify-center gap-1.5 sm:gap-2 transition-all ${targetType === 'team' ? 'border-primary bg-primary/10 text-primary-light' : 'border-border text-text-secondary'}`}>
+                                        <Users className="w-4 h-4 shrink-0" />نقاط لفريق
+                                    </button>
+                                    <button type="button"
+                                        onClick={() => setTargetType('member')}
+                                        className={`p-2.5 sm:p-3 rounded-xl border text-xs sm:text-sm font-bold flex items-center justify-center gap-1.5 sm:gap-2 transition-all ${targetType === 'member' ? 'border-accent bg-accent/10 text-accent-light' : 'border-border text-text-secondary'}`}>
+                                        <UserRound className="w-4 h-4 shrink-0" />نقاط لأفراد
+                                    </button>
+                                </div>
+                            </div>
+
+                            {/* Team select */}
+                            <div className="space-y-1.5">
+                                <label className="text-xs font-bold text-text-secondary">الفريق</label>
+                                <select required value={selectedTeam}
+                                    onChange={e => { setSelectedTeam(e.target.value); setSelectedMemberKeys([]); }}
+                                    className="select-field text-sm">
+                                    <option value="">اختر الفريق</option>
+                                    {teamsForSelection.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                                </select>
+                            </div>
+
+                            {/* Multi-member selector */}
+                            <AnimatePresence>
+                                {targetType === 'member' && (
+                                    <motion.div
+                                        initial={{ opacity: 0, height: 0 }}
+                                        animate={{ opacity: 1, height: 'auto' }}
+                                        exit={{ opacity: 0, height: 0 }}
+                                        className="space-y-2 overflow-hidden"
+                                    >
+                                        <div className="flex items-center justify-between">
+                                            <label className="text-xs font-bold text-text-secondary">
+                                                الأفراد
+                                                {selectedMembers.length > 0 && (
+                                                    <span className="mr-1.5 bg-accent/20 text-accent px-1.5 py-0.5 rounded-full text-[10px]">
+                                                        {selectedMembers.length} مختار
+                                                    </span>
+                                                )}
+                                            </label>
+                                            {availableMembers.length > 0 && (
+                                                <div className="flex gap-2">
+                                                    <button type="button" onClick={selectAllMembers}
+                                                        className="text-[11px] font-bold text-primary hover:text-primary-light transition-colors">
+                                                        تحديد الكل
+                                                    </button>
+                                                    {selectedMembers.length > 0 && (
+                                                        <button type="button" onClick={clearMembers}
+                                                            className="text-[11px] font-bold text-danger hover:text-danger/80 transition-colors">
+                                                            إلغاء الكل
+                                                        </button>
+                                                    )}
+                                                </div>
+                                            )}
+                                        </div>
+
+                                        {/* Member chips list */}
+                                        {!selectedTeam ? (
+                                            <p className="text-xs text-text-muted text-center py-3 bg-surface/40 rounded-xl border border-border/30">
+                                                اختر الفريق أولاً
+                                            </p>
+                                        ) : availableMembers.length === 0 ? (
+                                            <p className="text-xs text-text-muted text-center py-3 bg-surface/40 rounded-xl border border-border/30">
+                                                لا يوجد أعضاء في هذا الفريق
+                                            </p>
+                                        ) : (
+                                            <div className="max-h-40 overflow-y-auto overscroll-contain space-y-1 border border-border/40 rounded-xl p-2 bg-surface/30">
+                                                {availableMembers.map(member => {
+                                                    const isSelected = selectedMemberKeys.includes(member.key);
+                                                    return (
+                                                        <button
+                                                            key={member.key}
+                                                            type="button"
+                                                            onClick={() => toggleMember(member.key)}
+                                                            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg transition-all text-right ${isSelected
+                                                                ? 'bg-accent/15 border border-accent/40 text-accent-light'
+                                                                : 'hover:bg-surface/60 border border-transparent text-text-secondary'
+                                                                }`}
+                                                        >
+                                                            <div className={`w-4 h-4 rounded-full border-2 shrink-0 flex items-center justify-center transition-all ${isSelected ? 'bg-accent border-accent' : 'border-border'
+                                                                }`}>
+                                                                {isSelected && <Check className="w-2.5 h-2.5 text-white" />}
+                                                            </div>
+                                                            <div className="w-6 h-6 rounded-full bg-primary/20 flex items-center justify-center text-[10px] font-bold text-primary shrink-0">
+                                                                {member.name.charAt(0)}
+                                                            </div>
+                                                            <span className="text-xs font-bold flex-1 truncate">{member.name}</span>
+                                                            {member.source === 'team_list' && (
+                                                                <span className="text-[9px] text-text-muted shrink-0">قائمة</span>
+                                                            )}
+                                                        </button>
+                                                    );
+                                                })}
+                                            </div>
+                                        )}
+
+                                        {/* Selected chips */}
+                                        {selectedMembers.length > 0 && (
+                                            <div className="flex flex-wrap gap-1.5">
+                                                {selectedMembers.map(m => (
+                                                    <span key={m.key}
+                                                        className="flex items-center gap-1 text-[11px] font-bold bg-accent/15 text-accent border border-accent/30 px-2 py-0.5 rounded-full">
+                                                        {m.name}
+                                                        <button type="button" onClick={() => toggleMember(m.key)}
+                                                            className="hover:text-danger transition-colors">
+                                                            <X className="w-2.5 h-2.5" />
+                                                        </button>
+                                                    </span>
+                                                ))}
+                                            </div>
+                                        )}
+                                    </motion.div>
+                                )}
+                            </AnimatePresence>
+
+                            {/* Task select */}
+                            <div className="space-y-1.5">
+                                <label className="text-xs font-bold text-text-secondary">المهمة (اختياري)</label>
+                                <select value={selectedTask} onChange={e => { setSelectedTask(e.target.value); if (e.target.value) setCustomPoints(''); }}
+                                    className="select-field text-sm">
+                                    <option value="">بدون مهمة محددة</option>
+                                    {tasks.map(t => (
+                                        <option key={t.id} value={t.id}>[فريق] {t.title} (+{t.points})</option>
                                     ))}
                                 </select>
                             </div>
-                        )}
 
-                        <div className="space-y-2">
-                            <label className="text-xs font-bold text-text-secondary">المهمة (اختياري)</label>
-                            <select
-                                value={selectedTask}
-                                onChange={(e) => setSelectedTask(e.target.value)}
-                                className="select-field"
-                            >
-                                <option value="">بدون مهمة محددة</option>
-                                {tasks.map((task) => (
-                                    <option key={task.id} value={task.id}>
-                                        [فريق] {task.title} (+{task.points})
-                                    </option>
-                                ))}
-                            </select>
-                        </div>
+                            {/* Custom points + note — both required when no task */}
+                            <AnimatePresence>
+                                {noTaskSelected && (
+                                    <motion.div
+                                        initial={{ opacity: 0, height: 0 }}
+                                        animate={{ opacity: 1, height: 'auto' }}
+                                        exit={{ opacity: 0, height: 0 }}
+                                        className="space-y-3 overflow-hidden"
+                                    >
+                                        <div className="space-y-1.5">
+                                            <label className="text-xs font-bold text-text-secondary flex items-center gap-1">
+                                                عدد النقاط
+                                                <span className="text-danger">*</span>
+                                            </label>
+                                            <input
+                                                type="number"
+                                                required={noTaskSelected}
+                                                min="1"
+                                                value={customPoints}
+                                                onChange={e => setCustomPoints(e.target.value)}
+                                                className="input-field text-sm"
+                                                placeholder="أدخل عدد النقاط"
+                                            />
+                                        </div>
 
-                        <div className="space-y-2">
-                            <label className="text-xs font-bold text-text-secondary">إضافة / خصم</label>
-                            <div className="grid grid-cols-2 gap-3">
-                                <button
-                                    type="button"
-                                    onClick={() => setScoreType('earn')}
-                                    className={`p-3 rounded-xl border text-sm font-bold flex items-center justify-center gap-2 transition-all ${scoreType === 'earn' ? 'border-success bg-success/10 text-success' : 'border-border text-text-secondary'}`}
-                                >
-                                    <TrendingUp className="w-4 h-4" />
-                                    إضافة
-                                </button>
-                                <button
-                                    type="button"
-                                    onClick={() => setScoreType('deduct')}
-                                    className={`p-3 rounded-xl border text-sm font-bold flex items-center justify-center gap-2 transition-all ${scoreType === 'deduct' ? 'border-danger bg-danger/10 text-danger' : 'border-border text-text-secondary'}`}
-                                >
-                                    <TrendingDown className="w-4 h-4" />
-                                    خصم
-                                </button>
+                                        <div className="space-y-1.5">
+                                            <label className="text-xs font-bold text-text-secondary flex items-center gap-1">
+                                                سبب / اسم المهمة
+                                                <span className="text-danger">*</span>
+                                            </label>
+                                            <input
+                                                type="text"
+                                                required={noTaskSelected}
+                                                value={customNote}
+                                                onChange={e => setCustomNote(e.target.value)}
+                                                className="input-field text-sm"
+                                                placeholder="مثال: حضور الاجتماع، إنجاز التقرير..."
+                                            />
+                                            {noTaskSelected && !customNote.trim() && customPoints && (
+                                                <p className="text-[11px] text-danger font-bold">السبب مطلوب</p>
+                                            )}
+                                        </div>
+                                    </motion.div>
+                                )}
+                            </AnimatePresence>
+
+                            {/* Earn / Deduct */}
+                            <div className="space-y-1.5">
+                                <label className="text-xs font-bold text-text-secondary">إضافة / خصم</label>
+                                <div className="grid grid-cols-2 gap-2 sm:gap-3">
+                                    <button type="button" onClick={() => setScoreType('earn')}
+                                        className={`p-2.5 sm:p-3 rounded-xl border text-xs sm:text-sm font-bold flex items-center justify-center gap-1.5 transition-all ${scoreType === 'earn' ? 'border-success bg-success/10 text-success' : 'border-border text-text-secondary'}`}>
+                                        <TrendingUp className="w-4 h-4 shrink-0" />إضافة
+                                    </button>
+                                    <button type="button" onClick={() => setScoreType('deduct')}
+                                        className={`p-2.5 sm:p-3 rounded-xl border text-xs sm:text-sm font-bold flex items-center justify-center gap-1.5 transition-all ${scoreType === 'deduct' ? 'border-danger bg-danger/10 text-danger' : 'border-border text-text-secondary'}`}>
+                                        <TrendingDown className="w-4 h-4 shrink-0" />خصم
+                                    </button>
+                                </div>
                             </div>
-                        </div>
 
-                        {!selectedTask && (
-                            <div className="space-y-2">
-                                <label className="text-xs font-bold text-text-secondary">عدد النقاط</label>
-                                <input
-                                    type="number"
-                                    required={!selectedTask}
-                                    min="1"
-                                    value={customPoints}
-                                    onChange={(e) => setCustomPoints(e.target.value)}
-                                    className="input-field"
-                                    placeholder="أدخل عدد النقاط"
-                                />
-                            </div>
-                        )}
+                            {/* Preview */}
+                            <AnimatePresence>
+                                {selectedTeam && (selectedTask || (customPoints && customNote.trim())) && (
+                                    <motion.div
+                                        initial={{ opacity: 0, height: 0 }}
+                                        animate={{ opacity: 1, height: 'auto' }}
+                                        exit={{ opacity: 0, height: 0 }}
+                                        className={`p-3 sm:p-4 rounded-xl border overflow-hidden ${scoreType === 'earn' ? 'bg-success/5 border-success/20' : 'bg-danger/5 border-danger/20'}`}
+                                    >
+                                        <p className="text-xs text-text-secondary mb-1.5">معاينة:</p>
 
-                        {(selectedTeam && (selectedTask || customPoints)) && (
-                            <motion.div
-                                initial={{ opacity: 0, height: 0 }}
-                                animate={{ opacity: 1, height: 'auto' }}
-                                className={`p-4 rounded-xl border ${scoreType === 'earn' ? 'bg-success/5 border-success/20' : 'bg-danger/5 border-danger/20'}`}
-                            >
-                                <p className="text-xs text-text-secondary mb-1">معاينة:</p>
-                                <p className="font-bold text-text-primary">
-                                    {targetType === 'member'
-                                        ? `${selectedMember?.name || 'فرد'} (${getSelectedTeam()?.name || ''})`
-                                        : getSelectedTeam()?.name}
-                                    {' ← '}
-                                    <span className={scoreType === 'earn' ? 'text-success' : 'text-danger'}>
-                                        {scoreType === 'earn' ? '+' : '-'}{Math.abs(getPointsPreview())} نقطة
-                                    </span>
-                                </p>
-                            </motion.div>
-                        )}
+                                        {targetType === 'team' ? (
+                                            <div className="space-y-1">
+                                                <p className="font-bold text-text-primary text-sm">
+                                                    {getSelectedTeam()?.name}
+                                                    {' ← '}
+                                                    <span className={scoreType === 'earn' ? 'text-success' : 'text-danger'}>
+                                                        {scoreType === 'earn' ? '+' : '-'}{Math.abs(points) * (availableMembers.length > 0 ? availableMembers.length : 1)} نقطة
+                                                    </span>
+                                                </p>
+                                                {availableMembers.length > 0 && (
+                                                    <p className="text-xs text-text-secondary">
+                                                        ({availableMembers.length} أفراد × {Math.abs(points)} نقطة)
+                                                    </p>
+                                                )}
+                                            </div>
+                                        ) : selectedMembers.length > 0 ? (
+                                            <div className="space-y-1">
+                                                {selectedMembers.map(m => (
+                                                    <p key={m.key} className="font-bold text-text-primary text-xs flex items-center justify-between">
+                                                        <span className="truncate">{m.name}</span>
+                                                        <span className={`shrink-0 mr-2 ${scoreType === 'earn' ? 'text-success' : 'text-danger'}`}>
+                                                            {scoreType === 'earn' ? '+' : '-'}{Math.abs(points)}
+                                                        </span>
+                                                    </p>
+                                                ))}
+                                                <div className="border-t border-border/30 pt-1.5 mt-1.5 flex justify-between text-xs font-black">
+                                                    <span className="text-text-secondary">المجموع للفريق:</span>
+                                                    <span className={scoreType === 'earn' ? 'text-success' : 'text-danger'}>
+                                                        {scoreType === 'earn' ? '+' : '-'}{Math.abs(points) * selectedMembers.length}
+                                                    </span>
+                                                </div>
+                                            </div>
+                                        ) : null}
 
-                        <button
-                            type="submit"
-                            className={`btn w-full py-3 ${scoreType === 'earn' ? 'btn-primary' : 'btn-danger'}`}
-                        >
-                            <Check className="w-5 h-5" />
-                            تسجيل
-                        </button>
+                                        {noTaskSelected && customNote.trim() && (
+                                            <p className="text-xs text-text-muted mt-1.5 truncate">📝 {customNote}</p>
+                                        )}
+                                    </motion.div>
+                                )}
+                            </AnimatePresence>
+
+                            <button type="submit" disabled={!canSubmit || submitting}
+                                className={`btn pt-1.5 mt-1.5  w-full py-3 text-sm ${scoreType === 'earn' ? 'btn-primary' : 'btn-danger'} disabled:opacity-50`}>
+                                {submitting
+                                    ? <div className="spinner !w-4 !h-4" />
+                                    : <Check className="w-5 h-5" />
+                                }
+                                {targetType === 'member' && selectedMembers.length > 1
+                                    ? `تسجيل لـ ${selectedMembers.length} أفراد`
+                                    : 'تسجيل'
+                                }
+                            </button>
+
+                        </fieldset>
                     </form>
                 </div>
 
+                {/* ── RECENT SCORES ── */}
                 <div className="lg:col-span-3">
                     <div className="glass-card overflow-hidden">
                         <div className="p-4 border-b border-border flex items-center justify-between">
-                            <h3 className="font-bold text-text-primary flex items-center gap-2">
+                            <h3 className="font-bold text-text-primary flex items-center gap-2 text-sm sm:text-base">
                                 <Clock className="w-4 h-4 text-text-muted" />
                                 آخر التسجيلات
                             </h3>
                             <SyncBadge count={pendingCount} />
                         </div>
 
-                        <div className="divide-y divide-border/30 max-h-[500px] overflow-y-auto">
-                            {scores.length > 0 ? scores.map((score, i) => {
-                                const team = teams.find((t) => t.id === score.teamId);
-                                const task = tasks.find((t) => t.id === score.taskId);
-                                const actualTarget = score.targetType || 'team';
+                        <div className="divide-y divide-border/30 max-h-[460px] overflow-y-auto">
+                            {missingStageScope ? (
+                                <div className="p-12 text-center">
+                                    <div className="text-4xl mb-3">⚠️</div>
+                                    <p className="text-text-secondary text-sm font-bold">لا يمكن عرض التسجيلات قبل تعيين المرحلة</p>
+                                </div>
+                            ) : scores.length > 0 ? scores.map((score, i) => {
+                                const team = teams.find(t => t.id === score.teamId);
+                                const task = tasks.find(t => t.id === score.taskId);
+                                const isDeduct = score.type === 'deduct';
+                                const isMember = score.targetType === 'member';
                                 return (
                                     <motion.div
                                         key={score.id}
-                                        initial={{ opacity: 0, x: 20 }}
+                                        initial={{ opacity: 0, x: 16 }}
                                         animate={{ opacity: 1, x: 0 }}
                                         transition={{ delay: i * 0.03 }}
-                                        className="p-4 flex items-center gap-3 hover:bg-glass transition-colors"
+                                        className="p-3 sm:p-4 flex items-center gap-3 hover:bg-glass transition-colors"
                                     >
-                                        <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${score.type === 'earn' ? 'bg-success/15 text-success' : 'bg-danger/15 text-danger'}`}>
-                                            {score.type === 'earn' ? <TrendingUp className="w-5 h-5" /> : <TrendingDown className="w-5 h-5" />}
+                                        <div className={`w-9 h-9 sm:w-10 sm:h-10 rounded-xl flex items-center justify-center shrink-0 ${isDeduct ? 'bg-danger/15 text-danger' : 'bg-success/15 text-success'}`}>
+                                            {isDeduct ? <TrendingDown className="w-4 h-4 sm:w-5 sm:h-5" /> : <TrendingUp className="w-4 h-4 sm:w-5 sm:h-5" />}
                                         </div>
                                         <div className="flex-1 min-w-0">
-                                            <p className="font-bold text-text-primary text-sm truncate flex items-center gap-2">
-                                                {actualTarget === 'member'
-                                                    ? `${score.memberName || 'فرد'} (${team?.name || 'فريق غير معروف'})`
-                                                    : (team?.name || 'فريق غير معروف')}
-                                                {actualTarget === 'member' ? (
-                                                    <span className="badge badge-pending text-[10px] py-0 px-1.5">فرد</span>
-                                                ) : (
-                                                    <span className="badge badge-sync text-[10px] py-0 px-1.5">فريق</span>
-                                                )}
-                                                {score.source === 'team' ? (
-                                                    <span className="badge badge-sync text-[10px] py-0 px-1.5">الفريق</span>
-                                                ) : null}
+                                            <p className="font-bold text-text-primary text-xs sm:text-sm truncate flex items-center gap-1.5 flex-wrap">
+                                                {isMember ? `${score.memberName || 'فرد'} (${team?.name || '؟'})` : (team?.name || '؟')}
+                                                <span className={`badge text-[9px] py-0 px-1.5 ${isMember ? 'badge-pending' : 'badge-sync'}`}>
+                                                    {isMember ? 'فرد' : 'فريق'}
+                                                </span>
                                             </p>
-                                            <p className="text-text-muted text-xs truncate mt-0.5">
-                                                {task?.title ? `[فريق] ${task.title}` : 'نقاط مخصصة'}
+                                            <p className="text-text-muted text-[11px] truncate mt-0.5">
+                                                {score.customNote
+                                                    ? `📝 ${score.customNote}`
+                                                    : task?.title ? `[فريق] ${task.title}` : 'نقاط مخصصة'
+                                                }
                                             </p>
                                         </div>
                                         <div className="text-left shrink-0">
-                                            <span className={`font-black text-lg ${score.type === 'earn' ? 'text-success' : 'text-danger'}`}>
-                                                {score.type === 'earn' ? '+' : '-'}{score.points}
+                                            <span className={`font-black text-base sm:text-lg ${isDeduct ? 'text-danger' : 'text-success'}`}>
+                                                {isDeduct ? '-' : '+'}{score.points}
                                             </span>
                                             {score.pendingSync && (
                                                 <p className="text-[10px] text-accent font-bold">⚠️ قيد المزامنة</p>
