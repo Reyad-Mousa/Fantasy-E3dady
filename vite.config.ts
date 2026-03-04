@@ -45,10 +45,24 @@ export default defineConfig(({ mode }) => {
           skipWaiting: true,
           clientsClaim: true,
           cleanupOutdatedCaches: true,
-          globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2,json,webmanifest}'],
-          navigateFallback: '/index.html',
-          navigateFallbackAllowlist: [/^\/$/],
+          globPatterns: ['**/*.{js,css,ico,png,svg,woff2,json,webmanifest}'],
+          navigateFallbackDenylist: [/^\/.*/],
           runtimeCaching: [
+            {
+              urlPattern: ({ request }) => request.mode === 'navigate',
+              handler: 'NetworkFirst',
+              options: {
+                cacheName: 'app-pages-cache',
+                networkTimeoutSeconds: 5,
+                expiration: {
+                  maxEntries: 20,
+                  maxAgeSeconds: 60 * 60 * 24,
+                },
+                cacheableResponse: {
+                  statuses: [200],
+                },
+              },
+            },
             {
               urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,
               handler: 'CacheFirst',
