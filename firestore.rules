@@ -5,8 +5,21 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    function getRoleFromClaims() {
+      return request.auth.token.role is string ? request.auth.token.role : null;
+    }
+
+    function getRoleFromUserDoc() {
+      return exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role is string
+        ? get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role
+        : null;
+    }
+
     function getRole() {
-      return request.auth.token.role;
+      return getRoleFromClaims() != null
+        ? getRoleFromClaims()
+        : getRoleFromUserDoc();
     }
 
     function isSuperAdmin() {
@@ -21,12 +34,27 @@ service cloud.firestore {
       return getRole() == 'leader';
     }
 
+    function getUserStageFromClaims() {
+      return request.auth.token.stageId is string ? request.auth.token.stageId : null;
+    }
+
+    function getUserStageFromUserDoc() {
+      return exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.stageId is string
+        ? get(/databases/$(database)/documents/users/$(request.auth.uid)).data.stageId
+        : null;
+    }
+
     function getUserStage() {
-      return request.auth.token.stageId;
+      return getUserStageFromClaims() != null
+        ? getUserStageFromClaims()
+        : getUserStageFromUserDoc();
     }
 
     function isSameStage(stageId) {
-      return stageId == getUserStage();
+      return stageId is string &&
+        getUserStage() is string &&
+        stageId == getUserStage();
     }
 
     function teamExists(teamId) {
@@ -69,6 +97,31 @@ service cloud.firestore {
         isSameStage(request.resource.data.stageId);
     }
 
+    function isValidAuditOperation(operation) {
+      return operation == 'create' || operation == 'delete';
+    }
+
+    function isValidAuditEntityType(entityType) {
+      return entityType == 'team' || entityType == 'task' || entityType == 'member';
+    }
+
+    function hasValidStageForAuditCreate() {
+      return isSuperAdmin() ||
+        ((isAdmin() || isLeader()) &&
+          request.resource.data.stageId is string &&
+          isSameStage(request.resource.data.stageId));
+    }
+
+    function isValidAuditLogCreate() {
+      return request.resource.data.kind == 'audit' &&
+        isValidAuditOperation(request.resource.data.operation) &&
+        isValidAuditEntityType(request.resource.data.entityType) &&
+        request.resource.data.entityId is string &&
+        request.resource.data.entityName is string &&
+        request.resource.data.actorId == request.auth.uid &&
+        hasValidStageForAuditCreate();
+    }
+
     // Users: any authenticated user can create their own doc (for account setup)
     // super_admin has full access. admin can read users in same stage? The prompt says "admin can only read/write documents where stageId == ...". But users might not have stageId in db or it's on their token. Let's let them read all for UI to work or read same stage.
     match /users/{userId} {
@@ -81,7 +134,10 @@ service cloud.firestore {
 
     match /teams/{teamId} {
       allow read: if true;
-      allow create: if isSuperAdmin() || (isAdmin() && isSameStage(request.resource.data.stageId));
+      allow create: if isSuperAdmin() ||
+        ((isAdmin() || isLeader()) &&
+          request.resource.data.stageId is string &&
+          isSameStage(request.resource.data.stageId));
       allow update: if isSuperAdmin() || 
                     (isAdmin() && isSameStage(resource.data.stageId) && isSameStage(request.resource.data.stageId)) ||
                     (isLeader() && leaderOnlyUpdatesTeamPoints());
@@ -90,7 +146,20 @@ service cloud.firestore {
 
     match /tasks/{taskId} {
       allow read: if true;
-      allow write: if isSuperAdmin(); // Usually only super_admin creates tasks
+      allow create: if isSuperAdmin() ||
+        (isAdmin() &&
+          request.resource.data.stageId is string &&
+          isSameStage(request.resource.data.stageId));
+      allow update: if isSuperAdmin() ||
+        (isAdmin() &&
+          resource.data.stageId is string &&
+          request.resource.data.stageId is string &&
+          isSameStage(resource.data.stageId) &&
+          isSameStage(request.resource.data.stageId));
+      allow delete: if isSuperAdmin() ||
+        (isAdmin() &&
+          resource.data.stageId is string &&
+          isSameStage(resource.data.stageId));
     }
 
     match /scores/{scoreId} {
@@ -121,7 +190,7 @@ service cloud.firestore {
         isSuperAdmin() ||
         ((isAdmin() || isLeader()) && isSameStage(resource.data.stageId))
       );
-      allow create: if false;
+      allow create: if isAuthenticated() && isValidAuditLogCreate();
       allow update, delete: if false;
     }
   }

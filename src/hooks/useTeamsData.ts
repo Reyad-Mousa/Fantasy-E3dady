@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { collection, onSnapshot, doc, setDoc, updateDoc, deleteDoc, serverTimestamp, arrayUnion, arrayRemove, query, where } from 'firebase/firestore';
+import { collection, onSnapshot, doc, setDoc, updateDoc, deleteDoc, serverTimestamp, arrayUnion, arrayRemove, query, where, addDoc } from 'firebase/firestore';
 import { db } from '@/services/firebase';
 
 export interface TeamData {
@@ -29,6 +29,35 @@ export function useTeamsData(user: any, showToast: (msg: string, type?: 'success
         return unsub;
     }, [user]);
 
+    const createAuditLog = async (
+        operation: 'create' | 'delete',
+        entityId: string,
+        entityName: string,
+        stageId?: string | null
+    ) => {
+        if (!user) return;
+        const normalizedStageId = (stageId && stageId.trim()) || (user.stageId && user.stageId.trim()) || null;
+
+        try {
+            await addDoc(collection(db, 'logs'), {
+                kind: 'audit',
+                operation,
+                entityType: 'team',
+                entityId,
+                entityName: entityName.trim() || 'غير معروف',
+                stageId: normalizedStageId,
+                actorId: user.uid,
+                actorName: user.name || null,
+                actorEmail: user.email || null,
+                actorRole: user.role || null,
+                timestamp: serverTimestamp(),
+                source: 'client',
+            });
+        } catch (err) {
+            console.warn('Failed to write audit log:', err);
+        }
+    };
+
     const saveTeam = async (
         teamName: string,
         teamStageId: string,
@@ -36,6 +65,17 @@ export function useTeamsData(user: any, showToast: (msg: string, type?: 'success
         onSuccess: () => void
     ) => {
         if (!teamName.trim()) return;
+        if (!user) return;
+
+        if (user.role !== 'super_admin' && !user.stageId) {
+            showToast('لا يمكن حفظ الفريق قبل تعيين المرحلة', 'error');
+            return;
+        }
+
+        if (editingTeam && user.role === 'leader') {
+            showToast('صلاحية القائد تقتصر على إضافة فرق جديدة فقط', 'warning');
+            return;
+        }
 
         try {
             if (editingTeam) {
@@ -61,18 +101,28 @@ export function useTeamsData(user: any, showToast: (msg: string, type?: 'success
                     createdAt: serverTimestamp(),
                     stageId: assignedStageId,
                 });
+                await createAuditLog('create', id, teamName.trim(), assignedStageId);
                 showToast('تم إنشاء الفريق بنجاح ✅');
             }
             onSuccess();
-        } catch {
+        } catch (err: any) {
+            if (err?.code === 'permission-denied') {
+                showToast('مرفوض: تأكد أن role/stageId موجودين لحساب القائد في claims أو users/{uid}', 'error');
+                return;
+            }
             showToast('فشل في حفظ الفريق', 'error');
         }
     };
 
     const deleteTeam = async (team: TeamData | null, onSuccess: () => void) => {
         if (!team) return;
+        if (user?.role === 'leader') {
+            showToast('صلاحية القائد لا تشمل حذف الفرق', 'warning');
+            return;
+        }
         try {
             await deleteDoc(doc(db, 'teams', team.id));
+            await createAuditLog('delete', team.id, team.name, team.stageId || user?.stageId || null);
             showToast('تم حذف الفريق');
             onSuccess();
         } catch {
@@ -86,6 +136,10 @@ export function useTeamsData(user: any, showToast: (msg: string, type?: 'success
         onSuccess: (updatedTeam: TeamData) => void
     ) => {
         if (!team || !memberName.trim()) return;
+        if (user?.role === 'leader') {
+            showToast('صلاحية القائد لا تشمل تعديل أعضاء الفرق', 'warning');
+            return;
+        }
 
         try {
             await updateDoc(doc(db, 'teams', team.id), {
@@ -110,6 +164,10 @@ export function useTeamsData(user: any, showToast: (msg: string, type?: 'success
         memberName: string,
         onSuccess: (updatedTeam: TeamData) => void
     ) => {
+        if (user?.role === 'leader') {
+            showToast('صلاحية القائد لا تشمل تعديل أعضاء الفرق', 'warning');
+            return;
+        }
         try {
             const updatedMembers = (team.members || []).filter(m => m !== memberName);
             await updateDoc(doc(db, 'teams', team.id), {

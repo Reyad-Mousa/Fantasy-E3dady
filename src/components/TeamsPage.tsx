@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useAuth } from '@/context/AuthContext';
+import { useAuth, canCreateTeams } from '@/context/AuthContext';
 import { useToast, SectionHeader, EmptyState, ConfirmModal } from './ui/SharedUI';
 import { motion, AnimatePresence } from 'motion/react';
 import { Plus, Edit3, Trash2, X, Users, Trophy, UserPlus, UserMinus } from 'lucide-react';
@@ -27,6 +27,9 @@ export default function TeamsPage({ onBack }: { onBack?: () => void }) {
     const [addingMemberTo, setAddingMemberTo] = useState<TeamData | null>(null);
     const [newMemberName, setNewMemberName] = useState('');
     const [removeMemberConfirm, setRemoveMemberConfirm] = useState<{ team: TeamData, memberName: string } | null>(null);
+
+    const canCreateTeam = !!user && canCreateTeams(user.role);
+    const canManageTeamDetails = !!user && ['super_admin', 'admin'].includes(user.role);
 
     // ──────────── Team CRUD ────────────
     const handleSaveTeam = async (e: React.FormEvent) => {
@@ -70,7 +73,7 @@ export default function TeamsPage({ onBack }: { onBack?: () => void }) {
         });
     };
 
-    if (!user || !['super_admin', 'admin', 'leader'].includes(user.role)) {
+    if (!user || !canCreateTeam) {
         return (
             <div dir="rtl" className="glass-card p-12 text-center">
                 <div className="text-5xl mb-4">🔐</div>
@@ -120,10 +123,12 @@ export default function TeamsPage({ onBack }: { onBack?: () => void }) {
                         <span>عدد الفرق:</span>
                         <span className="text-text-primary bg-primary/20 text-primary-light border-primary/50 flex items-center justify-center w-6 h-6 rounded-full">{filteredTeams.length}</span>
                     </div>
-                    <button onClick={() => setShowTeamModal(true)} className="btn btn-primary text-sm w-full sm:w-auto">
-                        <Plus className="w-4 h-4" />
-                        فريق جديد
-                    </button>
+                    {canCreateTeam && (
+                        <button onClick={() => setShowTeamModal(true)} className="btn btn-primary text-sm w-full sm:w-auto">
+                            <Plus className="w-4 h-4" />
+                            فريق جديد
+                        </button>
+                    )}
                 </div>
             </div>
 
@@ -158,43 +163,47 @@ export default function TeamsPage({ onBack }: { onBack?: () => void }) {
                                     </div>
                                 </div>
                             </div>
-                            <div className="flex flex-col gap-1 shrink-0 bg-surface/50 p-1 rounded-xl border border-border/50">
-                                <button
-                                    onClick={() => {
-                                        setEditingTeam(team);
-                                        setTeamName(team.name);
-                                        setTeamStageId(team.stageId || '');
-                                        setShowTeamModal(true);
-                                    }}
-                                    className="p-1.5 rounded-lg hover:bg-primary/10 text-text-muted hover:text-primary transition-colors"
-                                    title="تعديل"
-                                >
-                                    <Edit3 className="w-4 h-4" />
-                                </button>
-                                <button
-                                    onClick={() => setDeleteTeamConfirm(team)}
-                                    className="p-1.5 rounded-lg hover:bg-danger/10 text-text-muted hover:text-danger transition-colors"
-                                    title="حذف"
-                                >
-                                    <Trash2 className="w-4 h-4" />
-                                </button>
-                            </div>
+                            {canManageTeamDetails && (
+                                <div className="flex flex-col gap-1 shrink-0 bg-surface/50 p-1 rounded-xl border border-border/50">
+                                    <button
+                                        onClick={() => {
+                                            setEditingTeam(team);
+                                            setTeamName(team.name);
+                                            setTeamStageId(team.stageId || '');
+                                            setShowTeamModal(true);
+                                        }}
+                                        className="p-1.5 rounded-lg hover:bg-primary/10 text-text-muted hover:text-primary transition-colors"
+                                        title="تعديل"
+                                    >
+                                        <Edit3 className="w-4 h-4" />
+                                    </button>
+                                    <button
+                                        onClick={() => setDeleteTeamConfirm(team)}
+                                        className="p-1.5 rounded-lg hover:bg-danger/10 text-text-muted hover:text-danger transition-colors"
+                                        title="حذف"
+                                    >
+                                        <Trash2 className="w-4 h-4" />
+                                    </button>
+                                </div>
+                            )}
                         </div>
 
                         {/* Members List */}
                         <div className="border-t border-border/30 pt-3 mt-3">
                             <div className="flex items-center justify-between mb-2">
                                 <h4 className="text-xs font-bold text-text-secondary">الأعضاء</h4>
-                                <button
-                                    onClick={() => {
-                                        setAddingMemberTo(team);
-                                        setNewMemberName('');
-                                    }}
-                                    className="flex items-center gap-1 text-xs font-bold text-primary hover:text-primary-light transition-colors"
-                                >
-                                    <UserPlus className="w-3 h-3" />
-                                    إضافة
-                                </button>
+                                {canManageTeamDetails && (
+                                    <button
+                                        onClick={() => {
+                                            setAddingMemberTo(team);
+                                            setNewMemberName('');
+                                        }}
+                                        className="flex items-center gap-1 text-xs font-bold text-primary hover:text-primary-light transition-colors"
+                                    >
+                                        <UserPlus className="w-3 h-3" />
+                                        إضافة
+                                    </button>
+                                )}
                             </div>
 
                             {team.members && team.members.length > 0 ? (
@@ -210,13 +219,15 @@ export default function TeamsPage({ onBack }: { onBack?: () => void }) {
                                                 </div>
                                                 <span className="text-sm text-text-primary">{member}</span>
                                             </div>
-                                            <button
-                                                onClick={() => setRemoveMemberConfirm({ team, memberName: member })}
-                                                className="opacity-0 group-hover:opacity-100 p-1 rounded-md hover:bg-danger/10 text-text-muted hover:text-danger transition-all"
-                                                title="إزالة"
-                                            >
-                                                <UserMinus className="w-3 h-3" />
-                                            </button>
+                                            {canManageTeamDetails && (
+                                                <button
+                                                    onClick={() => setRemoveMemberConfirm({ team, memberName: member })}
+                                                    className="opacity-0 group-hover:opacity-100 p-1 rounded-md hover:bg-danger/10 text-text-muted hover:text-danger transition-all"
+                                                    title="إزالة"
+                                                >
+                                                    <UserMinus className="w-3 h-3" />
+                                                </button>
+                                            )}
                                         </div>
                                     ))}
                                 </div>
