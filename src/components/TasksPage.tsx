@@ -4,6 +4,7 @@ import { db } from '@/services/firebase';
 import { useAuth, canCreateTasks } from '@/context/AuthContext';
 import { cacheTasks, getCachedTasks } from '@/services/offlineDb';
 import { useOnlineStatus, useToast, EmptyState, SectionHeader } from './ui/SharedUI';
+import StageBadge from './StageBadge';
 import { motion, AnimatePresence } from 'motion/react';
 import { ListTodo, Plus, Clock, CheckCircle2, XCircle, Trophy, Target, X, Calendar } from 'lucide-react';
 
@@ -90,13 +91,26 @@ export default function TasksPage({ onBack }: { onBack?: () => void }) {
         e.preventDefault();
         if (!user || !canCreateTasks(user.role)) return;
 
+        const title = newTitle.trim();
+        const points = Number(newPoints);
+        if (!title || !Number.isFinite(points) || points <= 0) {
+            showToast('تحقق من عنوان المهمة وعدد النقاط', 'warning');
+            return;
+        }
+
+        const stageIdForTask = user.role === 'admin' ? (user.stageId || null) : (selectedStage || null);
+        if (user.role === 'admin' && !stageIdForTask) {
+            showToast('لا يمكن إنشاء مهمة بدون مرحلة مرتبطة بحساب المشرف', 'error');
+            return;
+        }
+
         try {
             await addDoc(collection(db, 'tasks'), {
-                title: newTitle,
-                points: Number(newPoints),
+                title,
+                points,
                 type: 'team',
                 status: 'active',
-                stageId: selectedStage || null,
+                stageId: stageIdForTask,
                 createdBy: user.uid,
                 createdAt: serverTimestamp(),
             });
@@ -128,6 +142,11 @@ export default function TasksPage({ onBack }: { onBack?: () => void }) {
 
     const activeTasks = filteredTasks.filter(t => t.status === 'active');
     const archivedTasks = filteredTasks.filter(t => t.status === 'archived');
+    const canArchiveTask = (task: Task) => {
+        if (!user || !canCreateTasks(user.role)) return false;
+        if (user.role === 'super_admin') return true;
+        return user.role === 'admin' && !!user.stageId && task.stageId === user.stageId;
+    };
 
     if (loading) {
         return (
@@ -202,7 +221,7 @@ export default function TasksPage({ onBack }: { onBack?: () => void }) {
                                         <span className="text-xs text-text-muted">نقطة</span>
                                     </div>
 
-                                    {user && canCreateTasks(user.role) && (
+                                    {canArchiveTask(task) && (
                                         <button
                                             onClick={() => handleArchiveTask(task.id)}
                                             className="text-text-muted hover:text-danger transition-colors text-xs font-bold flex items-center gap-1"
@@ -302,6 +321,16 @@ export default function TasksPage({ onBack }: { onBack?: () => void }) {
                                             <option value="grade8">تانية إعدادي</option>
                                             <option value="grade9">تالتة إعدادي</option>
                                         </select>
+                                    </div>
+                                )}
+
+                                {user?.role === 'admin' && (
+                                    <div className="space-y-2">
+                                        <label className="text-xs font-bold text-text-secondary">المرحلة المخصصة</label>
+                                        <div className="bg-surface/50 border border-border/50 rounded-xl p-3 flex items-center justify-between gap-3">
+                                            <span className="text-xs text-text-muted">سيتم ربط المهمة تلقائياً بمرحلتك الحالية</span>
+                                            <StageBadge stageId={user.stageId} size="sm" />
+                                        </div>
                                     </div>
                                 )}
 

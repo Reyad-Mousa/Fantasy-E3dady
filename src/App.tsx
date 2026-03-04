@@ -26,7 +26,7 @@ function getTabFromHash(): string {
 function isTabAllowed(tab: string, user: any): boolean {
   switch (tab) {
     case 'teams':
-      return !!user && ['super_admin', 'admin'].includes(user.role);
+      return !!user && ['super_admin', 'admin', 'leader'].includes(user.role);
     case 'scores':
       return !!user && ['super_admin', 'admin', 'leader'].includes(user.role);
     case 'members':
@@ -87,7 +87,7 @@ function AppContent() {
       case 'leaderboard':
         return <Leaderboard onBack={() => handleNavigate('home')} />;
       case 'teams':
-        return user && ['super_admin', 'admin'].includes(user.role)
+        return user && ['super_admin', 'admin', 'leader'].includes(user.role)
           ? <TeamsPage onBack={() => handleNavigate('home')} />
           : <Home onNavigate={handleNavigate} />;
       case 'tasks':
