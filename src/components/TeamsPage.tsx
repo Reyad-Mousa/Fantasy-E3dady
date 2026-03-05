@@ -146,7 +146,7 @@ export default function TeamsPage({ onBack }: { onBack?: () => void }) {
                         <div className="flex items-start justify-between mb-4 gap-3">
                             <div className="flex items-start sm:items-center gap-3 min-w-0">
                                 <div className="w-12 h-12 rounded-2xl gradient-primary flex items-center justify-center text-white font-black text-xl shrink-0 shadow-sm border border-white/10">
-                                    {team.name.charAt(0)}
+                                    {(team.name || '؟').charAt(0)}
                                 </div>
                                 <div className="min-w-0">
                                     <h3 className="font-bold text-text-primary text-base sm:text-lg truncate" title={team.name}>{team.name}</h3>
@@ -215,7 +215,7 @@ export default function TeamsPage({ onBack }: { onBack?: () => void }) {
                                         >
                                             <div className="flex items-center gap-2">
                                                 <div className="w-6 h-6 rounded-full bg-primary/20 flex items-center justify-center text-[10px] font-bold text-primary">
-                                                    {member.charAt(0)}
+                                                    {(member || '؟').charAt(0)}
                                                 </div>
                                                 <span className="text-sm text-text-primary">{member}</span>
                                             </div>
@@ -358,7 +358,7 @@ export default function TeamsPage({ onBack }: { onBack?: () => void }) {
                                             >
                                                 <div className="flex items-center gap-2">
                                                     <div className="w-7 h-7 rounded-full bg-primary/20 flex items-center justify-center text-xs font-bold text-primary">
-                                                        {member.charAt(0)}
+                                                        {(member || '؟').charAt(0)}
                                                     </div>
                                                     <span className="text-sm text-text-primary font-bold">{member}</span>
                                                 </div>

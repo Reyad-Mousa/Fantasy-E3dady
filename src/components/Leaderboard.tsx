@@ -30,6 +30,7 @@ type BoardType = 'teams' | 'members';
 export default function Leaderboard({ onBack }: { onBack?: () => void }) {
     const [filter, setFilter] = useState<FilterValue>('all');
     const [boardType, setBoardType] = useState<BoardType>('teams');
+    const [isMounted, setIsMounted] = useState(false);
     const [teamsByStage, setTeamsByStage] = useState<Record<StageId, Team[]>>({
         grade7: [],
         grade8: [],
@@ -105,6 +106,10 @@ export default function Leaderboard({ onBack }: { onBack?: () => void }) {
         return () => unsubscribe();
     }, []);
 
+    useEffect(() => {
+        setIsMounted(true);
+    }, []);
+
     const getTeamName = (teamId: string, stageId: StageId): string => {
         const team = teamsByStage[stageId].find((t) => t.id === teamId);
         return team?.name || 'فريق غير معروف';
@@ -143,19 +148,21 @@ export default function Leaderboard({ onBack }: { onBack?: () => void }) {
                 {top5.length > 0 ? (
                     <div className="p-4 border-b border-border/30" style={{ height: 220 }} dir="ltr">
                         <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0} debounce={1}>
-                            <BarChart data={top5} margin={{ top: 20, right: 0, left: 0, bottom: 0 }}>
-                                <Tooltip
-                                    cursor={{ fill: 'rgba(255,255,255,0.02)' }}
-                                    contentStyle={{ backgroundColor: '#0a0a0f', borderColor: stage.color, borderRadius: '12px', color: '#fff' }}
-                                    itemStyle={{ color: '#fff', fontWeight: 'bold' }}
-                                />
-                                <Bar dataKey="points" radius={[6, 6, 0, 0]}>
-                                    {top5.map((entry, index) => (
-                                        <Cell key={`cell-${index}`} fill={stage.color} fillOpacity={entry.opacity} />
-                                    ))}
-                                </Bar>
-                                <XAxis dataKey="name" tick={{ fill: '#888', fontSize: 11, fontWeight: 'bold' }} axisLine={false} tickLine={false} />
-                            </BarChart>
+                            {isMounted && (
+                                <BarChart data={top5} margin={{ top: 20, right: 0, left: 0, bottom: 0 }}>
+                                    <Tooltip
+                                        cursor={{ fill: 'rgba(255,255,255,0.02)' }}
+                                        contentStyle={{ backgroundColor: '#0a0a0f', borderColor: stage.color, borderRadius: '12px', color: '#fff' }}
+                                        itemStyle={{ color: '#fff', fontWeight: 'bold' }}
+                                    />
+                                    <Bar dataKey="points" radius={[6, 6, 0, 0]}>
+                                        {top5.map((entry, index) => (
+                                            <Cell key={`cell-${index}`} fill={stage.color} fillOpacity={entry.opacity} />
+                                        ))}
+                                    </Bar>
+                                    <XAxis dataKey="name" tick={{ fill: '#888', fontSize: 11, fontWeight: 'bold' }} axisLine={false} tickLine={false} />
+                                </BarChart>
+                            )}
                         </ResponsiveContainer>
                     </div>
                 ) : (
@@ -271,7 +278,7 @@ export default function Leaderboard({ onBack }: { onBack?: () => void }) {
                                     <X className="w-4 h-4 text-white" />
                                 </button>
                                 <div className="w-16 h-16 rounded-2xl bg-white/20 backdrop-blur-sm flex items-center justify-center mx-auto mb-3">
-                                    <span className="text-3xl font-black text-white">{selectedTeam.name.charAt(0)}</span>
+                                    <span className="text-3xl font-black text-white">{(selectedTeam.name || '؟').charAt(0)}</span>
                                 </div>
                                 <h3 className="text-xl font-bold text-white mb-1">
                                     {selectedTeam.name}
