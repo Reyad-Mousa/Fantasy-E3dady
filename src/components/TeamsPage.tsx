@@ -29,7 +29,7 @@ export default function TeamsPage({ onBack }: { onBack?: () => void }) {
     const [removeMemberConfirm, setRemoveMemberConfirm] = useState<{ team: TeamData, memberName: string } | null>(null);
 
     const canCreateTeam = !!user && canCreateTeams(user.role);
-    const canManageTeamDetails = !!user && ['super_admin', 'admin'].includes(user.role);
+    const canManageTeamDetails = !!user && ['super_admin', 'admin', 'leader'].includes(user.role);
 
     // ──────────── Team CRUD ────────────
     const handleSaveTeam = async (e: React.FormEvent) => {
@@ -222,7 +222,7 @@ export default function TeamsPage({ onBack }: { onBack?: () => void }) {
                                             {canManageTeamDetails && (
                                                 <button
                                                     onClick={() => setRemoveMemberConfirm({ team, memberName: member })}
-                                                    className="opacity-0 group-hover:opacity-100 p-1 rounded-md hover:bg-danger/10 text-text-muted hover:text-danger transition-all"
+                                                    className="p-1 rounded-md hover:bg-danger/10 text-text-muted hover:text-danger transition-all"
                                                     title="إزالة"
                                                 >
                                                     <UserMinus className="w-3 h-3" />
