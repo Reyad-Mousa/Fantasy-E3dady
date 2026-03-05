@@ -37,7 +37,7 @@ export function useTeamsData(user: any, showToast: (msg: string, type?: 'success
         stageId,
         details,
     }: {
-        operation: 'create' | 'delete';
+        operation: 'create' | 'delete' | 'update';
         entityType: 'team' | 'task' | 'member';
         entityId: string;
         entityName: string;
@@ -84,10 +84,25 @@ export function useTeamsData(user: any, showToast: (msg: string, type?: 'success
 
         try {
             if (editingTeam) {
+                const oldName = editingTeam.name;
+                const newName = teamName.trim();
+
                 await updateDoc(doc(db, 'teams', editingTeam.id), {
-                    name: teamName.trim(),
+                    name: newName,
                     ...(user?.role === 'super_admin' && teamStageId && { stageId: teamStageId }),
                 });
+
+                if (oldName !== newName) {
+                    await createAuditLog({
+                        operation: 'update',
+                        entityType: 'team',
+                        entityId: editingTeam.id,
+                        entityName: newName,
+                        stageId: editingTeam.stageId || user?.stageId || null,
+                        details: `الاسم السابق: ${oldName}`,
+                    });
+                }
+
                 showToast('تم تحديث الفريق');
             } else {
                 const id = `team_${Date.now()}`;

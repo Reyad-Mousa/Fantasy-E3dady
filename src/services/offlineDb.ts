@@ -31,7 +31,8 @@ export interface CachedTask {
     taskId: string;
     title: string;
     points: number;
-    type: 'team' | 'leader';
+    teamPoints?: number;
+    type: 'team' | 'leader' | 'member' | string;
     status: 'active' | 'archived';
     stageId?: string;
 }

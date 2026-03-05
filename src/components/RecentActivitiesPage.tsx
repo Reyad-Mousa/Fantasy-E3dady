@@ -28,7 +28,7 @@ interface ScoreData {
 interface AuditLogData {
     id: string;
     kind?: string;
-    operation?: 'create' | 'delete' | string;
+    operation?: 'create' | 'delete' | 'update' | string;
     entityType?: 'team' | 'task' | 'member' | string;
     entityId?: string;
     entityName?: string;
@@ -171,7 +171,7 @@ export default function RecentActivitiesPage({ onBack }: { onBack?: () => void }
         const unsubLogs = onSnapshot(qLogs, snap => {
             const auditRows = snap.docs
                 .map(d => ({ id: d.id, ...d.data() } as AuditLogData))
-                .filter((row) => row.kind === 'audit' && (row.operation === 'create' || row.operation === 'delete'));
+                .filter((row) => row.kind === 'audit' && (row.operation === 'create' || row.operation === 'delete' || row.operation === 'update'));
             setLogs(auditRows);
             logsReady = true;
             markReady();
@@ -418,6 +418,7 @@ export default function RecentActivitiesPage({ onBack }: { onBack?: () => void }
 
                                 const log = event.log;
                                 const isCreate = log.operation === 'create';
+                                const isUpdate = log.operation === 'update';
                                 const stageId = log.stageId;
                                 const entityTypeLabel: Record<string, string> = {
                                     team: 'فريق',
@@ -443,27 +444,27 @@ export default function RecentActivitiesPage({ onBack }: { onBack?: () => void }
                                         <div className="flex items-start gap-3 sm:gap-4">
                                             <div className={`w-10 h-10 sm:w-12 sm:h-12 rounded-2xl flex items-center justify-center shrink-0 border shadow-lg ${isCreate
                                                 ? 'bg-success/10 border-success/30 text-success shadow-success/10'
-                                                : 'bg-danger/10 border-danger/30 text-danger shadow-danger/10'
+                                                : isUpdate
+                                                    ? 'bg-accent/10 border-accent/30 text-accent shadow-accent/10'
+                                                    : 'bg-danger/10 border-danger/30 text-danger shadow-danger/10'
                                                 }`}>
-                                                {isCreate ? <Plus className="w-5 h-5 sm:w-6 sm:h-6" /> : <Trash2 className="w-5 h-5 sm:w-6 sm:h-6" />}
+                                                {isCreate ? <Plus className="w-5 h-5 sm:w-6 sm:h-6" /> : isUpdate ? <FileText className="w-5 h-5 sm:w-6 sm:h-6" /> : <Trash2 className="w-5 h-5 sm:w-6 sm:h-6" />}
                                             </div>
 
                                             <div className="flex-1 min-w-0">
                                                 <div className="flex items-start justify-between gap-2">
                                                     <div className="space-y-1.5">
                                                         <h4 className="font-bold text-white text-sm sm:text-base leading-tight">
-                                                            {isCreate ? 'تم إنشاء' : 'تم حذف'} {entityLabel}
+                                                            {isCreate ? 'تم إضافة' : isUpdate ? 'تم تعديل' : 'تم حذف'} {entityLabel} &quot;<span className={isCreate ? 'text-success' : isUpdate ? 'text-accent' : 'text-danger'}>{log.entityName || 'غير معروف'}</span>&quot;
                                                         </h4>
                                                         <div className="flex flex-wrap items-center gap-1.5">
-                                                            <span className="inline-flex items-center gap-1 text-[10px] text-text-muted bg-white/5 px-2 py-0.5 rounded-md border border-white/5">
-                                                                <FileText className="w-3 h-3" />
-                                                                {log.entityName || 'غير معروف'}
-                                                            </span>
                                                             <span className={`inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-md border ${isCreate
                                                                 ? 'text-success bg-success/10 border-success/20'
-                                                                : 'text-danger bg-danger/10 border-danger/20'
+                                                                : isUpdate
+                                                                    ? 'text-accent bg-accent/10 border-accent/20'
+                                                                    : 'text-danger bg-danger/10 border-danger/20'
                                                                 }`}>
-                                                                {isCreate ? 'إنشاء' : 'حذف'}
+                                                                {isCreate ? 'إضافة' : isUpdate ? 'تعديل' : 'حذف'}
                                                             </span>
                                                             {stageId && <StageBadge stageId={stageId} size="sm" />}
                                                         </div>
