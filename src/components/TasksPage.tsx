@@ -18,6 +18,7 @@ interface Task {
     createdBy: string;
     stageId?: string;
     deadline?: any;
+    createdAt?: any;
 }
 
 interface TaskScore {
@@ -64,6 +65,7 @@ export default function TasksPage({ onBack }: { onBack?: () => void }) {
                     type: t.type,
                     status: t.status,
                     stageId: t.stageId,
+                    createdBy: t.createdBy,
                 }))).catch(console.error);
             });
             return () => unsub();
@@ -78,7 +80,7 @@ export default function TasksPage({ onBack }: { onBack?: () => void }) {
                 type: t.type,
                 status: t.status,
                 stageId: t.stageId,
-                createdBy: '',
+                createdBy: t.createdBy,
             } as Task));
 
             if (user?.role !== 'super_admin' && user?.stageId) {
@@ -91,6 +93,27 @@ export default function TasksPage({ onBack }: { onBack?: () => void }) {
             setLoading(false);
         });
     }, [online, user?.role, user?.stageId]);
+    const createAuditLog = async (operation: 'create' | 'delete' | 'update', entityId: string, entityName: string, stageId?: string | null, details?: string | null) => {
+        if (!user) return;
+        try {
+            await addDoc(collection(db, 'logs'), {
+                kind: 'audit',
+                operation,
+                entityType: 'task',
+                entityId,
+                entityName: entityName || 'غير معروف',
+                stageId: stageId || user.stageId || null,
+                actorId: user.uid,
+                actorName: user.name || null,
+                actorEmail: user.email || null,
+                actorRole: user.role || null,
+                details: details || null,
+                timestamp: serverTimestamp(),
+            });
+        } catch (err) {
+            console.warn('Failed to log task activity:', err);
+        }
+    };
 
     const handleCreateTask = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -113,14 +136,15 @@ export default function TasksPage({ onBack }: { onBack?: () => void }) {
             return;
         }
 
-        const stageIdForTask = user.role === 'admin' ? (user.stageId || null) : (selectedStage || null);
-        if (user.role === 'admin' && !stageIdForTask) {
+        const isStageScoped = user.role === 'admin' || user.role === 'leader';
+        const stageIdForTask = isStageScoped ? (user.stageId || null) : (selectedStage || null);
+        if (isStageScoped && !stageIdForTask) {
             showToast('لا يمكن إنشاء مهمة بدون مرحلة مرتبطة بحسابك', 'error');
             return;
         }
 
         try {
-            await addDoc(collection(db, 'tasks'), {
+            const docRef = await addDoc(collection(db, 'tasks'), {
                 title,
                 points,
                 teamPoints,
@@ -130,6 +154,7 @@ export default function TasksPage({ onBack }: { onBack?: () => void }) {
                 createdBy: user.uid,
                 createdAt: serverTimestamp(),
             });
+            await createAuditLog('create', docRef.id, title, stageIdForTask);
             showToast('تم إنشاء المهمة بنجاح');
             setShowCreateModal(false);
             setNewTitle('');
@@ -141,10 +166,11 @@ export default function TasksPage({ onBack }: { onBack?: () => void }) {
         }
     };
 
-    const handleArchiveTask = async (taskId: string) => {
-        if (!user || !canCreateTasks(user.role)) return;
+    const handleArchiveTask = async (task: Task) => {
+        if (!canArchiveTask(task)) return;
         try {
-            await updateDoc(doc(db, 'tasks', taskId), { status: 'archived' });
+            await updateDoc(doc(db, 'tasks', task.id), { status: 'archived' });
+            await createAuditLog('update', task.id, task.title, task.stageId, 'archived');
             showToast('تم أرشفة المهمة');
         } catch {
             showToast('فشل في أرشفة المهمة', 'error');
@@ -156,7 +182,8 @@ export default function TasksPage({ onBack }: { onBack?: () => void }) {
     const canArchiveTask = (task: Task) => {
         if (!user || !canCreateTasks(user.role)) return false;
         if (user.role === 'super_admin') return true;
-        return user.role === 'admin' && !!user.stageId && task.stageId === user.stageId;
+        // Leaders and admins can only archive tasks they created themselves.
+        return task.createdBy === user.uid;
     };
 
     if (loading) {
@@ -227,7 +254,7 @@ export default function TasksPage({ onBack }: { onBack?: () => void }) {
 
                                     {canArchiveTask(task) && (
                                         <button
-                                            onClick={() => handleArchiveTask(task.id)}
+                                            onClick={() => handleArchiveTask(task)}
                                             className="text-text-muted hover:text-danger transition-colors text-xs font-bold flex items-center gap-1"
                                         >
                                             <XCircle className="w-3.5 h-3.5" />
@@ -353,7 +380,7 @@ export default function TasksPage({ onBack }: { onBack?: () => void }) {
                                     </div>
                                 )}
 
-                                {user?.role === 'admin' && (
+                                {(user?.role === 'admin' || user?.role === 'leader') && (
                                     <div className="space-y-2">
                                         <label className="text-xs font-bold text-text-secondary">المرحلة المخصصة</label>
                                         <div className="bg-surface/50 border border-border/50 rounded-xl p-3 flex items-center justify-between gap-3">

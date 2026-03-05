@@ -35,6 +35,7 @@ export interface CachedTask {
     type: 'team' | 'leader' | 'member' | string;
     status: 'active' | 'archived';
     stageId?: string;
+    createdBy: string;
 }
 
 export interface CachedUser {

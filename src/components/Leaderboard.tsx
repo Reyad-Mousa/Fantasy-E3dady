@@ -44,45 +44,65 @@ export default function Leaderboard({ onBack }: { onBack?: () => void }) {
     const [selectedTeam, setSelectedTeam] = useState<Team | null>(null);
 
     useEffect(() => {
-        const unsubs = STAGES_LIST.map((stage) => {
-            const q = query(
-                collection(db, 'teams'),
-                where('stageId', '==', stage.id),
-                orderBy('totalPoints', 'desc'),
-            );
-            return onSnapshot(q, (snap) => {
-                const teams = snap.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() } as Team));
-                setTeamsByStage((prev) => ({ ...prev, [stage.id]: teams }));
+        // Fetch all teams once and filter/sort in-memory to avoid index requirements
+        const q = query(collection(db, 'teams'));
+        const unsubscribe = onSnapshot(q, (snap) => {
+            const allTeams = snap.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() } as Team));
+
+            const newTeamsByStage: Record<StageId, Team[]> = {
+                grade7: [],
+                grade8: [],
+                grade9: [],
+            };
+
+            allTeams.forEach(team => {
+                const stageId = team.stageId as StageId;
+                if (newTeamsByStage[stageId]) {
+                    newTeamsByStage[stageId].push(team);
+                }
             });
+
+            // Sort each stage in-memory
+            STAGES_LIST.forEach(stage => {
+                newTeamsByStage[stage.id as StageId].sort((a, b) => (b.totalPoints || 0) - (a.totalPoints || 0));
+            });
+
+            setTeamsByStage(newTeamsByStage);
         });
 
-        return () => {
-            unsubs.forEach((unsub) => {
-                if (typeof unsub === 'function') unsub();
-            });
-        };
+        return () => unsubscribe();
     }, []);
 
     useEffect(() => {
-        const unsubs = STAGES_LIST.map((stage) => {
-            const q = query(
-                collection(db, 'member_stats'),
-                where('stageId', '==', stage.id),
-                orderBy('totalPoints', 'desc'),
-            );
-            return onSnapshot(q, (snap) => {
-                const members = snap.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() } as MemberStat));
-                setMembersByStage((prev) => ({ ...prev, [stage.id]: members }));
-            }, () => {
-                setMembersByStage((prev) => ({ ...prev, [stage.id]: [] }));
+        // Fetch all member_stats once and filter/sort in-memory
+        const q = query(collection(db, 'member_stats'));
+        const unsubscribe = onSnapshot(q, (snap) => {
+            const allMembers = snap.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() } as MemberStat));
+
+            const newMembersByStage: Record<StageId, MemberStat[]> = {
+                grade7: [],
+                grade8: [],
+                grade9: [],
+            };
+
+            allMembers.forEach(member => {
+                const stageId = member.stageId as StageId;
+                if (newMembersByStage[stageId]) {
+                    newMembersByStage[stageId].push(member);
+                }
             });
+
+            // Sort each stage in-memory
+            STAGES_LIST.forEach(stage => {
+                newMembersByStage[stage.id as StageId].sort((a, b) => (b.totalPoints || 0) - (a.totalPoints || 0));
+            });
+
+            setMembersByStage(newMembersByStage);
+        }, () => {
+            setMembersByStage({ grade7: [], grade8: [], grade9: [] });
         });
 
-        return () => {
-            unsubs.forEach((unsub) => {
-                if (typeof unsub === 'function') unsub();
-            });
-        };
+        return () => unsubscribe();
     }, []);
 
     const getTeamName = (teamId: string, stageId: StageId): string => {
@@ -122,7 +142,7 @@ export default function Leaderboard({ onBack }: { onBack?: () => void }) {
 
                 {top5.length > 0 ? (
                     <div className="p-4 border-b border-border/30" style={{ height: 220 }} dir="ltr">
-                        <ResponsiveContainer width="100%" height="100%">
+                        <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0} debounce={1}>
                             <BarChart data={top5} margin={{ top: 20, right: 0, left: 0, bottom: 0 }}>
                                 <Tooltip
                                     cursor={{ fill: 'rgba(255,255,255,0.02)' }}

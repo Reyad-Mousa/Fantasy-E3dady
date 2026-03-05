@@ -517,7 +517,7 @@ export default function ScoreRegistration({ onBack }: { onBack?: () => void }) {
                                                                 {isSelected && <Check className="w-2.5 h-2.5 text-white" />}
                                                             </div>
                                                             <div className="w-6 h-6 rounded-full bg-primary/20 flex items-center justify-center text-[10px] font-bold text-primary shrink-0">
-                                                                {member.name.charAt(0)}
+                                                                {(member.name || '؟').charAt(0)}
                                                             </div>
                                                             <span className="text-xs font-bold flex-1 truncate">{member.name}</span>
                                                             {member.source === 'team_list' && (

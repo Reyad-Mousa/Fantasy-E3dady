@@ -193,7 +193,7 @@ export function useAuth() {
 
 // Role permission helpers
 export function canCreateTasks(role: Role): boolean {
-  return role === 'super_admin' || role === 'admin';
+  return role === 'super_admin' || role === 'admin' || role === 'leader';
 }
 
 export function canCreateTeams(role: Role): boolean {

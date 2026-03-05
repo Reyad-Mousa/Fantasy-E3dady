@@ -146,20 +146,16 @@ service cloud.firestore {
 
     match /tasks/{taskId} {
       allow read: if true;
-      allow create: if isSuperAdmin() ||
-        (isAdmin() &&
-          request.resource.data.stageId is string &&
-          isSameStage(request.resource.data.stageId));
+      allow create: if (isSuperAdmin() || isAdmin() || isLeader()) &&
+        request.resource.data.createdBy == request.auth.uid &&
+        (isSuperAdmin() || (request.resource.data.stageId is string && isSameStage(request.resource.data.stageId)) || request.resource.data.stageId == null);
       allow update: if isSuperAdmin() ||
-        (isAdmin() &&
-          resource.data.stageId is string &&
-          request.resource.data.stageId is string &&
-          isSameStage(resource.data.stageId) &&
-          isSameStage(request.resource.data.stageId));
-      allow delete: if isSuperAdmin() ||
-        (isAdmin() &&
-          resource.data.stageId is string &&
-          isSameStage(resource.data.stageId));
+        (
+          resource.data.createdBy == request.auth.uid &&
+          request.resource.data.diff(resource.data).changedKeys().hasOnly(['status']) &&
+          request.resource.data.status == 'archived'
+        );
+      allow delete: if isSuperAdmin();
     }
 
     match /scores/{scoreId} {
@@ -191,7 +187,7 @@ service cloud.firestore {
         ((isAdmin() || isLeader()) && isSameStage(resource.data.stageId))
       );
       allow create: if isAuthenticated() && isValidAuditLogCreate();
-      allow update, delete: if false;
+      allow update, delete: if isSuperAdmin();
     }
   }
 }

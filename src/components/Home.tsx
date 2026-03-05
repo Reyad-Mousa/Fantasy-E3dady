@@ -53,48 +53,19 @@ export default function Home({ onNavigate }: HomeProps) {
         };
       });
       setStageStats(aggregated);
-    });
 
-    // 2. Public Previews (if not logged in)
-    let unsubPublicTeams = () => { };
-    let unsubPublicTasks = () => { };
-    if (!user) {
-      const qTeams = query(collection(db, 'teams'), orderBy('totalPoints', 'desc'), limit(5));
-      unsubPublicTeams = onSnapshot(qTeams, snap => {
-        setPublicLeaderboard(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-      });
-
-      const qTasks = query(collection(db, 'tasks'), where('status', '==', 'active'), limit(4));
-      unsubPublicTasks = onSnapshot(qTasks, snap => {
-        setPublicTasks(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-      });
-    }
-
-    // 3. User specific stats
-    let unsubUserTasks = () => { };
-    if (user) {
-      const tasksQ = query(collection(db, 'tasks'), where('status', '==', 'active'));
-      unsubUserTasks = onSnapshot(tasksQ, (snap) => {
-        setStats(prev => ({ ...prev, tasks: snap.size.toString() }));
-      });
-
-      // For user rank/points
-      const stageFilter = (user.role === 'admin' || user.role === 'leader') && user.stageId
-        ? where('stageId', '==', user.stageId)
-        : null;
-
-      const teamsQ = stageFilter
-        ? query(collection(db, 'teams'), stageFilter, orderBy('totalPoints', 'desc'))
-        : query(collection(db, 'teams'), orderBy('totalPoints', 'desc'));
-
-      const unsubUserTeams = onSnapshot(teamsQ, (snap) => {
-        const teams = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      // Handle user specific stats using allTeams to avoid index requirements
+      if (user) {
         const isTeamUser = user.teamId || user.role === 'leader' || user.role === 'member';
 
         if (isTeamUser) {
-          const myTeamIndex = teams.findIndex((t: any) => t.id === user.teamId || t.leaderId === user.uid);
+          // Filter teams by user's stage if applicable for ranking
+          const stageTeams = user.stageId ? allTeams.filter((t: any) => t.stageId === user.stageId) : allTeams;
+          const sortedTeams = [...stageTeams].sort((a: any, b: any) => (b.totalPoints || 0) - (a.totalPoints || 0));
+
+          const myTeamIndex = sortedTeams.findIndex((t: any) => t.id === user.teamId || t.leaderId === user.uid);
           if (myTeamIndex !== -1) {
-            const myTeam = teams[myTeamIndex] as any;
+            const myTeam = sortedTeams[myTeamIndex] as any;
             setStats(prev => ({
               ...prev,
               rank: `#${myTeamIndex + 1}`,
@@ -103,28 +74,39 @@ export default function Home({ onNavigate }: HomeProps) {
             }));
           }
         } else {
-          const totalPoints = teams.reduce((acc, t: any) => acc + (t.totalPoints || 0), 0);
-          const totalMembers = teams.reduce((acc, t: any) => acc + (t.memberCount || 0), 0);
+          // SuperAdmin or Guest view
+          const totalPoints = allTeams.reduce((acc, t: any) => acc + (t.totalPoints || 0), 0);
+          const totalMembers = allTeams.reduce((acc, t: any) => acc + (t.memberCount || 0), 0);
           setStats(prev => ({
             ...prev,
-            rank: `${teams.length}`,
+            rank: `${allTeams.length}`,
             points: totalPoints.toString(),
             members: totalMembers.toString()
           }));
         }
-      });
-      return () => {
-        unsubTeams();
-        unsubPublicTeams();
-        unsubPublicTasks();
-        unsubUserTasks();
-        unsubUserTeams();
       }
+    });
+
+    // 2. Public Previews (if not logged in)
+    let unsubPublicTasks = () => { };
+    if (!user) {
+      const qTasks = query(collection(db, 'tasks'), where('status', '==', 'active'), limit(4));
+      unsubPublicTasks = onSnapshot(qTasks, snap => {
+        setPublicTasks(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+      });
+    }
+
+    // 3. User specific tasks
+    let unsubUserTasks = () => { };
+    if (user) {
+      const tasksQ = query(collection(db, 'tasks'), where('status', '==', 'active'));
+      unsubUserTasks = onSnapshot(tasksQ, (snap) => {
+        setStats(prev => ({ ...prev, tasks: snap.size.toString() }));
+      });
     }
 
     return () => {
       unsubTeams();
-      unsubPublicTeams();
       unsubPublicTasks();
       unsubUserTasks();
     };
@@ -242,7 +224,7 @@ export default function Home({ onNavigate }: HomeProps) {
           {isMobile ? (
             <div className="rounded-2xl border border-white/5 bg-white/[0.03] p-3">
               <div className="h-[240px] w-full" dir="ltr">
-                <ResponsiveContainer width="100%" height="100%">
+                <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
                   <BarChart
                     data={mobileChartData}
                     margin={{ top: 8, bottom: 2 }}
@@ -296,7 +278,7 @@ export default function Home({ onNavigate }: HomeProps) {
           ) : (
             <>
               <div className="h-[280px] sm:h-[350px] w-full" dir="ltr">
-                <ResponsiveContainer width="100%" height="100%">
+                <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0} debounce={1}>
                   <BarChart data={stageStats} margin={{ top: 10, right: 0, left: -20, bottom: 0 }}>
                     <XAxis
                       dataKey="name"
