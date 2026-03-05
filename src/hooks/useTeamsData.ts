@@ -82,11 +82,6 @@ export function useTeamsData(user: any, showToast: (msg: string, type?: 'success
             return;
         }
 
-        if (editingTeam && user.role === 'leader') {
-            showToast('صلاحية القائد تقتصر على إضافة فرق جديدة فقط', 'warning');
-            return;
-        }
-
         try {
             if (editingTeam) {
                 await updateDoc(doc(db, 'teams', editingTeam.id), {
@@ -132,10 +127,6 @@ export function useTeamsData(user: any, showToast: (msg: string, type?: 'success
 
     const deleteTeam = async (team: TeamData | null, onSuccess: () => void) => {
         if (!team) return;
-        if (user?.role === 'leader') {
-            showToast('صلاحية القائد لا تشمل حذف الفرق', 'warning');
-            return;
-        }
         try {
             await deleteDoc(doc(db, 'teams', team.id));
             await createAuditLog({
@@ -158,11 +149,6 @@ export function useTeamsData(user: any, showToast: (msg: string, type?: 'success
         onSuccess: (updatedTeam: TeamData) => void
     ) => {
         if (!team || !memberName.trim()) return;
-        if (user?.role === 'leader') {
-            showToast('صلاحية القائد لا تشمل تعديل أعضاء الفرق', 'warning');
-            return;
-        }
-
         try {
             await updateDoc(doc(db, 'teams', team.id), {
                 members: arrayUnion(memberName.trim()),
@@ -194,10 +180,6 @@ export function useTeamsData(user: any, showToast: (msg: string, type?: 'success
         memberName: string,
         onSuccess: (updatedTeam: TeamData) => void
     ) => {
-        if (user?.role === 'leader') {
-            showToast('صلاحية القائد لا تشمل تعديل أعضاء الفرق', 'warning');
-            return;
-        }
         try {
             const updatedMembers = (team.members || []).filter(m => m !== memberName);
             await updateDoc(doc(db, 'teams', team.id), {
