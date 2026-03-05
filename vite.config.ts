@@ -12,7 +12,7 @@ export default defineConfig(({ mode }) => {
       tailwindcss(),
       VitePWA({
         registerType: 'autoUpdate',
-        includeAssets: ['favicon.svg', 'icon-192.png', 'icon-512.png'],
+        includeAssets: ['favicon.png', 'icon-192.png', 'icon-512.png'],
         manifest: {
           name: 'Fantasy E3DADY',
           short_name: 'Fantasy E3DADY',
