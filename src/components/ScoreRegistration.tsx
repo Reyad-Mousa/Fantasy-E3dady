@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { addDoc, collection, doc, increment, onSnapshot, orderBy, query, serverTimestamp, setDoc, updateDoc, where } from 'firebase/firestore';
+import { addDoc, collection, doc, increment, limit, onSnapshot, orderBy, query, serverTimestamp, setDoc, updateDoc, where } from 'firebase/firestore';
 import { db } from '@/services/firebase';
 import { useAuth, canRegisterScores } from '@/context/AuthContext';
 import { addPendingScore, getPendingSyncCount } from '@/services/offlineDb';
@@ -7,28 +7,29 @@ import { isOnline, syncPendingScores } from '@/services/syncService';
 import { logActivity } from '@/services/activityLogger';
 import { SectionHeader, SyncBadge, useOnlineStatus, useToast } from './ui/SharedUI';
 import { motion, AnimatePresence } from 'motion/react';
-import { Check, Clock, Plus, RefreshCw, TrendingDown, TrendingUp, UserRound, Users, X } from 'lucide-react';
+import { AlertTriangle, Check, Clock, Plus, RefreshCw, Shield, Star, TrendingDown, TrendingUp, Trophy, UserRound, Users, X } from 'lucide-react';
+import { formatDistanceToNow } from 'date-fns';
+import { ar } from 'date-fns/locale';
 import StageBadge from './StageBadge';
 
 type TargetType = 'team' | 'member';
 
-interface Score {
+interface ScoreActivity {
     id: string;
-    teamId: string;
-    taskId: string;
-    points: number;
-    type: 'earn' | 'deduct';
-    source?: 'team' | 'leader';
-    registeredBy: string;
+    kind: 'score' | 'audit';
     timestamp: any;
-    pendingSync?: boolean;
     stageId?: string | null;
-    targetType?: TargetType;
+    teamId?: string;
+    teamName?: string | null;
+    taskId?: string | null;
+    taskTitle?: string | null;
+    points?: number;
+    scoreType?: 'earn' | 'deduct';
+    targetType?: 'team' | 'member';
     memberKey?: string | null;
-    memberUserId?: string | null;
     memberName?: string | null;
-    applyToTeamTotal?: boolean;
     customNote?: string | null;
+    actorName?: string | null;
 }
 
 interface Team {
@@ -66,12 +67,32 @@ function normalizeName(name: string): string {
     return name.toLowerCase().trim().replace(/\s+/g, ' ');
 }
 
+function toEventDate(value: any): Date {
+    if (!value) return new Date(0);
+    if (typeof value?.toDate === 'function') return value.toDate();
+    if (typeof value === 'number') return new Date(value);
+    if (typeof value === 'string') {
+        const parsed = new Date(value);
+        return Number.isNaN(parsed.getTime()) ? new Date(0) : parsed;
+    }
+    return new Date(0);
+}
+
+function isPermissionDeniedError(error: unknown): boolean {
+    return Boolean(
+        error &&
+        typeof error === 'object' &&
+        'code' in error &&
+        (error as { code?: unknown }).code === 'permission-denied'
+    );
+}
+
 export default function ScoreRegistration({ onBack }: { onBack?: () => void }) {
     const { user } = useAuth();
     const { showToast } = useToast();
     const online = useOnlineStatus();
 
-    const [scores, setScores] = useState<Score[]>([]);
+    const [recentActivities, setRecentActivities] = useState<ScoreActivity[]>([]);
     const [teams, setTeams] = useState<Team[]>([]);
     const [tasks, setTasks] = useState<Task[]>([]);
     const [memberUsers, setMemberUsers] = useState<MemberUser[]>([]);
@@ -94,7 +115,7 @@ export default function ScoreRegistration({ onBack }: { onBack?: () => void }) {
         if (!user) return;
         const currentStageScopedRole = user.role === 'admin' || user.role === 'leader';
         if (currentStageScopedRole && !user.stageId) {
-            setTeams([]); setScores([]); setTasks([]); setMemberUsers([]);
+            setTeams([]); setRecentActivities([]); setTasks([]); setMemberUsers([]);
             return;
         }
         const stageFilter = currentStageScopedRole && user.stageId
@@ -112,12 +133,22 @@ export default function ScoreRegistration({ onBack }: { onBack?: () => void }) {
                 .filter(t => (t as any).status === 'active' && (t.type === 'team' || t.type === 'member'))),
             err => console.error('Tasks:', err));
 
-        const scoresQ = stageFilter
-            ? query(collection(db, 'scores'), stageFilter, orderBy('timestamp', 'desc'))
-            : query(collection(db, 'scores'), orderBy('timestamp', 'desc'));
-        const u3 = onSnapshot(scoresQ, snap =>
-            setScores(snap.docs.slice(0, 20).map(d => ({ id: d.id, ...d.data() } as Score))),
-            err => console.error('Scores:', err));
+        const activitiesQ = query(collection(db, 'activities'), orderBy('timestamp', 'desc'), limit(200));
+        const u3 = onSnapshot(activitiesQ, snap => {
+            let docs = snap.docs
+                .map(d => ({ id: d.id, ...d.data() } as ScoreActivity))
+                .filter(a => a.kind === 'score');
+
+            if (user.role !== 'super_admin' && user.stageId) {
+                docs = docs.filter(a => a.stageId === user.stageId);
+            }
+
+            docs.sort((a, b) => toEventDate(b.timestamp).getTime() - toEventDate(a.timestamp).getTime());
+            setRecentActivities(docs.slice(0, 20));
+        }, err => {
+            console.error('Activities:', err);
+            setRecentActivities([]);
+        });
 
         const u4 = onSnapshot(collection(db, 'users'), snap => {
             setMemberUsers(snap.docs.map(d => ({ id: d.id, ...d.data() } as MemberUser))
@@ -332,6 +363,7 @@ export default function ScoreRegistration({ onBack }: { onBack?: () => void }) {
 
             } else {
                 // Multi-member scores — one doc per member
+                const onlineMode = isOnline();
                 const results = await Promise.allSettled(
                     selectedMembers.map(async (member) => {
                         const scoreData = {
@@ -351,7 +383,7 @@ export default function ScoreRegistration({ onBack }: { onBack?: () => void }) {
                             timestamp: Date.now(),
                         };
 
-                        if (isOnline()) {
+                        if (onlineMode) {
                             await addDoc(collection(db, 'scores'), { ...scoreData, timestamp: serverTimestamp(), syncedAt: serverTimestamp(), pendingSync: false });
                             await setDoc(doc(db, 'member_stats', member.key), {
                                 memberKey: member.key,
@@ -386,13 +418,31 @@ export default function ScoreRegistration({ onBack }: { onBack?: () => void }) {
                 );
 
                 // Update team total once (points × number of members)
-                if (isOnline()) {
-                    await updateDoc(doc(db, 'teams', selectedTeam), {
-                        totalPoints: increment(pointChange * selectedMembers.length),
-                    });
-                    const failed = results.filter(r => r.status === 'rejected').length;
-                    if (failed === 0) showToast(`✅ تم تسجيل النقاط لـ ${selectedMembers.length} فرد`);
-                    else showToast(`تم ${selectedMembers.length - failed} من ${selectedMembers.length} — فشل ${failed}`, 'warning');
+                if (onlineMode) {
+                    const failures = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+                    const failed = failures.length;
+                    const successCount = selectedMembers.length - failed;
+
+                    if (successCount > 0) {
+                        await updateDoc(doc(db, 'teams', selectedTeam), {
+                            totalPoints: increment(pointChange * successCount),
+                        });
+                    }
+
+                    const hasPermissionDenied = failures.some(r => isPermissionDeniedError(r.reason));
+                    if (successCount === 0) {
+                        if (hasPermissionDenied) {
+                            showToast('فشل تسجيل النقاط: لا يمكن تحديث member_stats. راجع بيانات المرحلة أو شغّل إصلاح member_stats', 'error');
+                        } else {
+                            showToast('فشل في تسجيل نقاط الأفراد', 'error');
+                        }
+                    } else if (failed === 0) {
+                        showToast(`✅ تم تسجيل النقاط لـ ${selectedMembers.length} فرد`);
+                    } else if (hasPermissionDenied) {
+                        showToast(`تم ${successCount} من ${selectedMembers.length} — فشل ${failed}. تحقق من member_stats/المرحلة`, 'warning');
+                    } else {
+                        showToast(`تم ${successCount} من ${selectedMembers.length} — فشل ${failed}`, 'warning');
+                    }
                 } else {
                     showToast('⚠️ تم الحفظ محلياً للأفراد المختارين', 'warning');
                 }
@@ -723,40 +773,69 @@ export default function ScoreRegistration({ onBack }: { onBack?: () => void }) {
                                     <div className="text-4xl mb-3">⚠️</div>
                                     <p className="text-text-secondary text-sm font-bold">لا يمكن عرض التسجيلات قبل تعيين المرحلة</p>
                                 </div>
-                            ) : scores.length > 0 ? scores.map((score, i) => {
-                                const team = teams.find(t => t.id === score.teamId);
-                                const task = tasks.find(t => t.id === score.taskId);
-                                const isDeduct = score.type === 'deduct';
-                                const isMember = score.targetType === 'member';
+                            ) : recentActivities.length > 0 ? recentActivities.map((activity, i) => {
+                                const isEarn = activity.scoreType === 'earn';
+                                const isMember = activity.targetType === 'member';
+                                const points = Math.abs(Number(activity.points || 0));
+                                const teamName = activity.teamName || teams.find(t => t.id === activity.teamId)?.name || '؟';
+                                const taskTitle = activity.taskTitle || tasks.find(t => t.id === activity.taskId)?.title || activity.customNote || 'مهمة مخصصة';
+                                const eventDate = toEventDate(activity.timestamp);
+                                const timeAgo = eventDate.getTime() > 0
+                                    ? formatDistanceToNow(eventDate, { addSuffix: true, locale: ar })
+                                    : 'الآن';
                                 return (
                                     <motion.div
-                                        key={score.id}
-                                        initial={{ opacity: 0, x: 16 }}
+                                        key={activity.id}
+                                        initial={{ opacity: 0, x: -10 }}
                                         animate={{ opacity: 1, x: 0 }}
                                         transition={{ delay: i * 0.03 }}
-                                        className="p-3 sm:p-4 flex items-center gap-3 hover:bg-glass transition-colors"
+                                        className="p-4 sm:p-5 hover:bg-white/[0.02] transition-colors"
                                     >
-                                        <div className={`w-9 h-9 sm:w-10 sm:h-10 rounded-xl flex items-center justify-center shrink-0 ${isDeduct ? 'bg-danger/15 text-danger' : 'bg-success/15 text-success'}`}>
-                                            {isDeduct ? <TrendingDown className="w-4 h-4 sm:w-5 sm:h-5" /> : <TrendingUp className="w-4 h-4 sm:w-5 sm:h-5" />}
-                                        </div>
-                                        <div className="flex-1 min-w-0">
-                                            <p className="font-bold text-text-primary text-xs sm:text-sm truncate flex items-center gap-1.5 flex-wrap">
-                                                {isMember ? `${score.memberName || 'فرد'} (${team?.name || '؟'})` : (team?.name || '؟')}
-                                                <span className={`badge text-[9px] py-0 px-1.5 ${isMember ? 'badge-pending' : 'badge-sync'}`}>
-                                                    {isMember ? 'فرد' : 'فريق'}
-                                                </span>
-                                            </p>
-                                            <p className="text-text-muted text-[11px] truncate mt-0.5">
-                                                {task?.title ? `[${task.type === 'team' ? 'فريق' : 'فرد'}] ${task.title}` : 'غير معروف'}
-                                            </p>
-                                        </div>
-                                        <div className="text-left shrink-0">
-                                            <span className={`font-black text-base sm:text-lg ${isDeduct ? 'text-danger' : 'text-success'}`}>
-                                                {isDeduct ? '-' : '+'}{score.points}
-                                            </span>
-                                            {score.pendingSync && (
-                                                <p className="text-[10px] text-accent font-bold">⚠️ قيد المزامنة</p>
-                                            )}
+                                        <div className="flex items-start gap-3 sm:gap-4">
+                                            <div className={`w-10 h-10 sm:w-12 sm:h-12 rounded-2xl flex items-center justify-center shrink-0 border shadow-lg ${isEarn
+                                                ? 'bg-success/10 border-success/30 text-success shadow-success/10'
+                                                : 'bg-danger/10 border-danger/30 text-danger shadow-danger/10'}`}>
+                                                {isEarn ? <Trophy className="w-5 h-5 sm:w-6 sm:h-6" /> : <AlertTriangle className="w-5 h-5 sm:w-6 sm:h-6" />}
+                                            </div>
+
+                                            <div className="flex-1 min-w-0">
+                                                <div className="flex items-start justify-between gap-2">
+                                                    <div className="space-y-1.5 min-w-0">
+                                                        <h4 className="font-bold text-text-primary text-sm sm:text-base leading-tight">
+                                                            {isMember
+                                                                ? <span className="text-primary-light">{activity.memberName || 'فرد'}</span>
+                                                                : teamName
+                                                            }
+                                                        </h4>
+                                                        <div className="flex flex-wrap items-center gap-1.5">
+                                                            {isMember && (
+                                                                <span className="inline-flex items-center gap-1 text-[10px] text-text-muted bg-white/5 px-2 py-0.5 rounded-md border border-white/5">
+                                                                    <Users className="w-3 h-3" />{teamName}
+                                                                </span>
+                                                            )}
+                                                            {activity.stageId && <StageBadge stageId={activity.stageId} size="sm" />}
+                                                        </div>
+                                                    </div>
+                                                    <div className={`shrink-0 px-3 py-1.5 sm:px-4 sm:py-2 rounded-xl font-black text-base sm:text-lg border flex items-center gap-1 ${isEarn
+                                                        ? 'bg-success/10 text-success border-success/20'
+                                                        : 'bg-danger/10 text-danger border-danger/20'}`}>
+                                                        {isEarn ? '+' : '-'}{points}
+                                                        <span className="text-[10px] font-bold opacity-70">نقطة</span>
+                                                    </div>
+                                                </div>
+
+                                                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-2.5 text-xs text-text-secondary">
+                                                    <span className="flex items-center gap-1">
+                                                        <Star className="w-3.5 h-3.5 text-accent/60" />
+                                                        {taskTitle}
+                                                    </span>
+                                                    <span className="flex items-center gap-1 text-text-muted">
+                                                        <Shield className="w-3.5 h-3.5" />
+                                                        بواسطة: <span className="text-primary-light/80 font-bold">{activity.actorName || 'غير معروف'}</span>
+                                                    </span>
+                                                    <span className="text-text-muted/60 text-[10px]">{timeAgo}</span>
+                                                </div>
+                                            </div>
                                         </div>
                                     </motion.div>
                                 );

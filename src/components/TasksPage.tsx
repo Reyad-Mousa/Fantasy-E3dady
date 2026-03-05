@@ -5,7 +5,7 @@ import {
 } from 'firebase/firestore';
 import { db } from '@/services/firebase';
 import { useAuth, canCreateTasks, canRegisterScores } from '@/context/AuthContext';
-import { cacheTasks, getCachedTasks } from '@/services/offlineDb';
+import { addPendingScore, cacheTasks, getCachedTasks } from '@/services/offlineDb';
 import { logActivity } from '@/services/activityLogger';
 import { useOnlineStatus, useToast, EmptyState, SectionHeader } from './ui/SharedUI';
 import StageBadge from './StageBadge';
@@ -79,6 +79,15 @@ const saveAttendedKeys = (taskId: string, keys: Set<string>) => {
     } catch { /* storage full — ignore */ }
 };
 // ──────────────────────────────────────────────────────────────────────────
+
+function isPermissionDeniedError(error: unknown): boolean {
+    return Boolean(
+        error &&
+        typeof error === 'object' &&
+        'code' in error &&
+        (error as { code?: unknown }).code === 'permission-denied'
+    );
+}
 
 export default function TasksPage({ onBack, initialTaskId }: { onBack?: () => void, initialTaskId?: string | null }) {
     const { user } = useAuth();
@@ -222,58 +231,81 @@ export default function TasksPage({ onBack, initialTaskId }: { onBack?: () => vo
         setAddingKey(member.key);
         try {
             const stageId = member.stageId || user.stageId || null;
-            // 1. Add score document (individual)
-            await addDoc(collection(db, 'scores'), {
+            const memberPayload = {
                 teamId: member.teamId,
                 taskId: attendanceTask.id,
                 points,
-                type: 'earn',
-                targetType: 'member',
-                source: 'team',
+                type: 'earn' as const,
+                targetType: 'member' as const,
+                source: 'team' as const,
                 registeredBy: user.uid,
-                registeredByName: user.name,
+                registeredByName: user.name || null,
                 stageId,
                 memberKey: member.key,
                 memberUserId: member.userId,
                 memberName: member.name,
                 applyToTeamTotal: true,
-                pendingSync: false,
-                timestamp: serverTimestamp(),
-                syncedAt: serverTimestamp(),
-            });
-            // Log to activities
-            logActivity({
-                kind: 'score',
-                teamId: member.teamId,
-                teamName: member.teamName,
-                taskId: attendanceTask.id,
-                taskTitle: attendanceTask.title,
-                points,
-                scoreType: 'earn',
-                targetType: 'member',
-                memberKey: member.key,
-                memberName: member.name,
-                stageId,
-                actorId: user.uid,
-                actorName: user.name,
-                actorRole: user.role,
-            });
+                customNote: null,
+            };
 
-            // 2. Upsert member_stats
-            await setDoc(doc(db, 'member_stats', member.key), {
-                memberKey: member.key,
-                memberUserId: member.userId,
-                memberName: member.name,
-                teamId: member.teamId,
-                stageId,
-                totalPoints: increment(points),
-                updatedAt: serverTimestamp(),
-            }, { merge: true });
+            if (online) {
+                // 1. Add score document (individual)
+                await addDoc(collection(db, 'scores'), {
+                    ...memberPayload,
+                    pendingSync: false,
+                    timestamp: serverTimestamp(),
+                    syncedAt: serverTimestamp(),
+                });
+                // Log to activities
+                logActivity({
+                    kind: 'score',
+                    teamId: member.teamId,
+                    teamName: member.teamName,
+                    taskId: attendanceTask.id,
+                    taskTitle: attendanceTask.title,
+                    points,
+                    scoreType: 'earn',
+                    targetType: 'member',
+                    memberKey: member.key,
+                    memberName: member.name,
+                    stageId,
+                    actorId: user.uid,
+                    actorName: user.name,
+                    actorRole: user.role,
+                });
 
-            // 3. Update team total with individual points
-            await updateDoc(doc(db, 'teams', member.teamId), {
-                totalPoints: increment(points),
-            });
+                // 2. Upsert member_stats
+                try {
+                    await setDoc(doc(db, 'member_stats', member.key), {
+                        memberKey: member.key,
+                        memberUserId: member.userId,
+                        memberName: member.name,
+                        teamId: member.teamId,
+                        stageId,
+                        totalPoints: increment(points),
+                        updatedAt: serverTimestamp(),
+                    }, { merge: true });
+                } catch (err) {
+                    if (isPermissionDeniedError(err)) {
+                        throw {
+                            scope: 'member_stats',
+                            code: 'permission-denied',
+                            original: err,
+                        };
+                    }
+                    throw err;
+                }
+
+                // 3. Update team total with individual points
+                await updateDoc(doc(db, 'teams', member.teamId), {
+                    totalPoints: increment(points),
+                });
+            } else {
+                await addPendingScore({
+                    ...memberPayload,
+                    timestamp: Date.now(),
+                });
+            }
 
             // 4. Build the new addedKeys set, persist to localStorage
             const newAddedKeys = new Set(addedKeys).add(member.key);
@@ -288,56 +320,88 @@ export default function TasksPage({ onBack, initialTaskId }: { onBack?: () => vo
                     teamMembers.every(m => newAddedKeys.has(m.key));
 
                 if (allTeamDone) {
-                    // Add teamPoints bonus to the team
-                    await updateDoc(doc(db, 'teams', member.teamId), {
-                        totalPoints: increment(teamBonus),
-                    });
-                    // Log bonus score doc
-                    await addDoc(collection(db, 'scores'), {
-                        teamId: member.teamId,
-                        taskId: attendanceTask.id,
-                        points: teamBonus,
-                        type: 'earn',
-                        targetType: 'team',
-                        source: 'team',
-                        registeredBy: user.uid,
-                        registeredByName: user.name,
-                        stageId,
-                        memberKey: null,
-                        memberUserId: null,
-                        memberName: null,
-                        applyToTeamTotal: true,
-                        customNote: 'مكافأة حضور كامل الفريق',
-                        pendingSync: false,
-                        timestamp: serverTimestamp(),
-                        syncedAt: serverTimestamp(),
-                    });
                     const bonusTeamName = teams.find(t => t.id === member.teamId)?.name || '';
-                    // Log bonus to activities
-                    logActivity({
-                        kind: 'score',
-                        teamId: member.teamId,
-                        teamName: bonusTeamName,
-                        taskId: attendanceTask.id,
-                        taskTitle: attendanceTask.title,
-                        points: teamBonus,
-                        scoreType: 'earn',
-                        targetType: 'team',
-                        customNote: 'مكافأة حضور كامل الفريق',
-                        stageId,
-                        actorId: user.uid,
-                        actorName: user.name,
-                        actorRole: user.role,
-                    });
-                    showToast(`🎉 كل فريق "${bonusTeamName}" حضر! +${teamBonus} نقطة للمجموعة`, 'success');
+                    if (online) {
+                        // Add teamPoints bonus to the team
+                        await updateDoc(doc(db, 'teams', member.teamId), {
+                            totalPoints: increment(teamBonus),
+                        });
+                        // Log bonus score doc
+                        await addDoc(collection(db, 'scores'), {
+                            teamId: member.teamId,
+                            taskId: attendanceTask.id,
+                            points: teamBonus,
+                            type: 'earn',
+                            targetType: 'team',
+                            source: 'team',
+                            registeredBy: user.uid,
+                            registeredByName: user.name,
+                            stageId,
+                            memberKey: null,
+                            memberUserId: null,
+                            memberName: null,
+                            applyToTeamTotal: true,
+                            customNote: 'مكافأة حضور كامل الفريق',
+                            pendingSync: false,
+                            timestamp: serverTimestamp(),
+                            syncedAt: serverTimestamp(),
+                        });
+                        // Log bonus to activities
+                        logActivity({
+                            kind: 'score',
+                            teamId: member.teamId,
+                            teamName: bonusTeamName,
+                            taskId: attendanceTask.id,
+                            taskTitle: attendanceTask.title,
+                            points: teamBonus,
+                            scoreType: 'earn',
+                            targetType: 'team',
+                            customNote: 'مكافأة حضور كامل الفريق',
+                            stageId,
+                            actorId: user.uid,
+                            actorName: user.name,
+                            actorRole: user.role,
+                        });
+                        showToast(`🎉 كل فريق "${bonusTeamName}" حضر! +${teamBonus} نقطة للمجموعة`, 'success');
+                    } else {
+                        await addPendingScore({
+                            teamId: member.teamId,
+                            taskId: attendanceTask.id,
+                            points: teamBonus,
+                            type: 'earn',
+                            targetType: 'team',
+                            source: 'team',
+                            registeredBy: user.uid,
+                            registeredByName: user.name || null,
+                            stageId,
+                            memberKey: null,
+                            memberUserId: null,
+                            memberName: null,
+                            customNote: 'مكافأة حضور كامل الفريق',
+                            distributeToMembers: false,
+                            applyToTeamTotal: true,
+                            timestamp: Date.now(),
+                        });
+                        showToast(`✅ تم الحفظ محليًا: ${member.name} + مكافأة فريق "${bonusTeamName}". ستتم المزامنة عند عودة الإنترنت`, 'warning');
+                    }
                     return; // toast already shown (addedKeys & localStorage already updated above)
                 }
             }
 
-            showToast(`✅ تم إضافة ${points} نقطة لـ ${member.name}`);
+            if (online) {
+                showToast(`✅ تم إضافة ${points} نقطة لـ ${member.name}`);
+            } else {
+                showToast(`✅ تم حفظ ${member.name} محليًا وسيتم التزامن عند عودة الإنترنت`, 'warning');
+            }
         } catch (err) {
-            console.error(err);
-            showToast('فشل في إضافة النقاط', 'error');
+            const scopedError = err as { scope?: string; code?: string; original?: unknown };
+            if (scopedError.scope === 'member_stats' && scopedError.code === 'permission-denied') {
+                console.error(scopedError.original ?? err);
+                showToast('تعذّر تحديث نقاط الفرد بسبب صلاحيات/مرحلة member_stats. يُرجى إصلاح بيانات member_stats أولًا', 'error');
+            } else {
+                console.error(err);
+                showToast('فشل في إضافة النقاط', 'error');
+            }
         } finally {
             setAddingKey(null);
         }
@@ -739,7 +803,7 @@ export default function TasksPage({ onBack, initialTaskId }: { onBack?: () => vo
 
                                                 {/* Action button */}
                                                 <button
-                                                    disabled={isAdded || isLoading || !online}
+                                                    disabled={isAdded || isLoading}
                                                     onClick={() => handleGivePoints(member)}
                                                     className={`shrink-0 w-9 h-9 rounded-xl flex items-center justify-center transition-all font-bold text-sm ${isAdded
                                                         ? 'bg-green-500/20 text-green-400 cursor-default'
@@ -766,7 +830,7 @@ export default function TasksPage({ onBack, initialTaskId }: { onBack?: () => vo
                             {!online && (
                                 <div className="px-6 py-3 bg-warning/10 border-t border-warning/30">
                                     <p className="text-xs text-warning font-bold text-center">
-                                        ⚠️ لا يوجد اتصال — لا يمكن تسجيل النقاط حالياً
+                                        ⚠️ لا يوجد اتصال — التسجيل يعمل محليًا الآن وسيتم التزامن تلقائيًا عند عودة الإنترنت
                                     </p>
                                 </div>
                             )}

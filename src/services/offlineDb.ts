@@ -9,10 +9,13 @@ export interface PendingScore {
     targetType: 'team' | 'member';
     source?: 'team' | 'leader';
     registeredBy: string;
+    registeredByName?: string | null;
     stageId: string | null;
     memberKey?: string;
     memberUserId?: string | null;
     memberName?: string;
+    customNote?: string | null;
+    distributeToMembers?: boolean;
     applyToTeamTotal: boolean;
     timestamp: number;
     synced: boolean;
@@ -74,6 +77,18 @@ class CompetitionDB extends Dexie {
         });
         this.version(4).stores({
             pendingScores: '++id, teamId, taskId, points, type, targetType, source, registeredBy, stageId, memberKey, memberUserId, applyToTeamTotal, timestamp, synced',
+            cachedTeams: 'teamId, name, leaderId, totalPoints, updatedAt',
+            cachedTasks: 'taskId, title, points, type, status, stageId',
+            cachedUsers: 'userId, name, email, role, teamId',
+        });
+        this.version(5).stores({
+            pendingScores: '++id, teamId, taskId, points, type, targetType, source, registeredBy, registeredByName, stageId, memberKey, memberUserId, memberName, customNote, applyToTeamTotal, timestamp, synced',
+            cachedTeams: 'teamId, name, leaderId, totalPoints, updatedAt',
+            cachedTasks: 'taskId, title, points, type, status, stageId',
+            cachedUsers: 'userId, name, email, role, teamId',
+        });
+        this.version(6).stores({
+            pendingScores: '++id, teamId, taskId, points, type, targetType, source, registeredBy, registeredByName, stageId, memberKey, memberUserId, memberName, customNote, distributeToMembers, applyToTeamTotal, timestamp, synced',
             cachedTeams: 'teamId, name, leaderId, totalPoints, updatedAt',
             cachedTasks: 'taskId, title, points, type, status, stageId',
             cachedUsers: 'userId, name, email, role, teamId',

@@ -361,8 +361,12 @@ export default function Leaderboard({ onBack }: { onBack?: () => void }) {
                                 <h4 className="font-bold text-text-primary mb-3 px-2">أعضاء الفريق</h4>
                                 {(() => {
                                     const teamMembers = (selectedTeam.members || []).map(memberName => {
+                                        const normalizedMemberName = normalizeMemberName(memberName || '');
                                         const stat = (membersByStage[selectedTeam.stageId as StageId] || [])
-                                            .find(m => m.teamId === selectedTeam.id && m.memberName === memberName);
+                                            .find(m =>
+                                                m.teamId === selectedTeam.id &&
+                                                normalizeMemberName(m.memberName || '') === normalizedMemberName
+                                            );
                                         return {
                                             id: stat?.id || `${selectedTeam.id}-${memberName}`,
                                             memberName,

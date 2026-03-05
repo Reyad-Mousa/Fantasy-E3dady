@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
-import { collection, query, where, onSnapshot, limit, getDocs } from 'firebase/firestore';
+import { collection, query, where, onSnapshot, limit } from 'firebase/firestore';
 import { db } from '@/services/firebase';
 import { useAuth } from '@/context/AuthContext';
 import { StatsCard } from './ui/SharedUI';
@@ -12,6 +12,10 @@ import { usePerfProfile } from '@/hooks/usePerfProfile';
 
 interface HomeProps {
   onNavigate?: (tab: string, taskId?: string) => void;
+}
+
+function normalizeMemberName(value: string): string {
+  return value.toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
 export default function Home({ onNavigate }: HomeProps) {
@@ -32,6 +36,10 @@ export default function Home({ onNavigate }: HomeProps) {
   const [loadingMembers, setLoadingMembers] = useState(false);
   const mobileChartContainerRef = useRef<HTMLDivElement | null>(null);
   const [isMobileChartReady, setIsMobileChartReady] = useState(false);
+  const selectedTeamLive = useMemo(() => {
+    if (!selectedTeam) return null;
+    return teamsData.find(t => t.id === selectedTeam.id) || selectedTeam;
+  }, [teamsData, selectedTeam]);
 
   // ── Listener 1: member_stats → summed by teamId ───────────────────────────
   useEffect(() => {
@@ -181,50 +189,64 @@ export default function Home({ onNavigate }: HomeProps) {
   }, [isMounted, isMobile]);
 
   useEffect(() => {
-    if (!selectedTeam) {
+    if (!selectedTeamLive) {
       setTeamMembersStats([]);
       return;
     }
 
     setLoadingMembers(true);
-    const fetchMemberStats = async () => {
-      try {
-        const statsSnap = await getDocs(query(collection(db, 'member_stats'), where('teamId', '==', selectedTeam.id)));
-        const statsDocs = statsSnap.docs.map(d => d.data());
+    const unsub = onSnapshot(
+      query(collection(db, 'member_stats'), where('teamId', '==', selectedTeamLive.id)),
+      (statsSnap) => {
+        const statsByName = new Map<string, { name: string; points: number }>();
+        statsSnap.docs.forEach((docSnap) => {
+          const stat = docSnap.data() as any;
+          const rawName = String(stat.memberName || '').trim();
+          const normalized = normalizeMemberName(rawName);
+          if (!normalized) return;
+          const points = Number(stat.totalPoints || 0);
+          const existing = statsByName.get(normalized);
+          if (existing) {
+            existing.points += Number.isFinite(points) ? points : 0;
+          } else {
+            statsByName.set(normalized, {
+              name: rawName || 'غير معروف',
+              points: Number.isFinite(points) ? points : 0,
+            });
+          }
+        });
 
         const seen = new Set<string>();
         const merged: { name: string; points: number }[] = [];
 
-        for (const memberName of (selectedTeam.members || [])) {
+        for (const memberName of (selectedTeamLive.members || [])) {
           const name = String(memberName || '').trim();
-          if (!name || seen.has(name.toLowerCase())) continue;
-          seen.add(name.toLowerCase());
-          const stat = statsDocs.find(s => (s as any).memberName?.toLowerCase().trim() === name.toLowerCase());
-          merged.push({ name, points: Math.round((stat as any)?.totalPoints || 0) });
+          const normalized = normalizeMemberName(name);
+          if (!normalized || seen.has(normalized)) continue;
+          seen.add(normalized);
+          const stat = statsByName.get(normalized);
+          merged.push({ name, points: Math.round(stat?.points || 0) });
         }
 
-        // Lastly, add any member stats documents that weren't caught in the loops above
-        for (const s of statsDocs) {
-          const statData = s as any;
-          const nameLower = (statData.memberName || '').toLowerCase().trim();
-          if (nameLower && !seen.has(nameLower)) {
-            seen.add(nameLower);
-            merged.push({ name: statData.memberName, points: Math.round(statData.totalPoints || 0) });
-          }
+        for (const [normalized, stat] of statsByName.entries()) {
+          if (seen.has(normalized)) continue;
+          seen.add(normalized);
+          merged.push({ name: stat.name, points: Math.round(stat.points || 0) });
         }
 
         merged.sort((a, b) => b.points - a.points);
         setTeamMembersStats(merged);
-      } catch {
-        const fallback = (selectedTeam.members || []).map((name: string) => ({ name, points: 0 }));
+        setLoadingMembers(false);
+      },
+      () => {
+        const fallback = (selectedTeamLive.members || []).map((name: string) => ({ name, points: 0 }));
         setTeamMembersStats(fallback);
-      } finally {
         setLoadingMembers(false);
       }
-    };
+    );
 
-    fetchMemberStats();
-  }, [selectedTeam]);
+    return unsub;
+  }, [selectedTeamLive]);
 
 
   const navigate = (tab: string, taskId?: string) => {
@@ -575,7 +597,7 @@ export default function Home({ onNavigate }: HomeProps) {
 
       {/* Team Members Modal */}
       <AnimatePresence>
-        {selectedTeam && (
+        {selectedTeamLive && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm" onClick={() => setSelectedTeam(null)}>
             <motion.div
               initial={animationsEnabled ? { opacity: 0, scale: 0.95, y: 10 } : false}
@@ -588,15 +610,15 @@ export default function Home({ onNavigate }: HomeProps) {
 
               <div className="flex items-start justify-between mb-6 pt-2">
                 <div>
-                  <h3 className="text-xl sm:text-2xl font-black text-white mb-2">{selectedTeam.name}</h3>
+                  <h3 className="text-xl sm:text-2xl font-black text-white mb-2">{selectedTeamLive.name}</h3>
                   <div className="flex items-center gap-3 flex-wrap">
                     <span className="text-sm bg-accent/10 text-accent px-2 py-1 rounded-lg font-bold flex items-center gap-1.5 border border-accent/20">
                       <Trophy className="w-3.5 h-3.5 fill-accent" />
-                      {Math.round(selectedTeam.totalPoints || 0)} نقطة
+                      {Math.round(selectedTeamLive.totalPoints || 0)} نقطة
                     </span>
                     <span className="text-sm bg-white/5 text-text-primary px-2 py-1 rounded-lg font-bold flex items-center gap-1.5 border border-white/10">
                       <Users className="w-3.5 h-3.5 text-text-muted" />
-                      {selectedTeam.members?.length || 0} أعضاء
+                      {selectedTeamLive.members?.length || 0} أعضاء
                     </span>
                   </div>
                 </div>
@@ -642,7 +664,7 @@ export default function Home({ onNavigate }: HomeProps) {
                             <span className="text-[10px] text-text-muted font-bold">نقطة</span>
                           </span>
                           {(() => {
-                            const teamTotal = selectedTeam.totalPoints || 0;
+                            const teamTotal = selectedTeamLive.totalPoints || 0;
                             return teamTotal > 0 ? (
                               <span className="text-[10px] text-text-muted/60 font-bold mt-1 pr-1" dir="ltr">
                                 {((member.points / teamTotal) * 100).toFixed(1)}%

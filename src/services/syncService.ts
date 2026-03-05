@@ -25,10 +25,12 @@ export async function syncPendingScores(): Promise<number> {
                 targetType: score.targetType ?? 'team',
                 source: score.source ?? 'team',
                 registeredBy: score.registeredBy,
+                registeredByName: score.registeredByName ?? null,
                 stageId,
                 memberKey: score.memberKey ?? null,
                 memberUserId: score.memberUserId ?? null,
                 memberName: score.memberName ?? null,
+                customNote: score.customNote ?? null,
                 applyToTeamTotal: score.applyToTeamTotal ?? true,
                 timestamp: serverTimestamp(),
                 syncedAt: serverTimestamp(),
@@ -42,8 +44,8 @@ export async function syncPendingScores(): Promise<number> {
                 });
             }
 
-            // If it's a team score, distribute it to all members identically to online behavior
-            if ((score.targetType ?? 'team') === 'team') {
+            // If it's a team score, distribute to members unless explicitly disabled
+            if ((score.targetType ?? 'team') === 'team' && score.distributeToMembers !== false) {
                 try {
                     // Fetch real users belonging to the team
                     const usersSnap = await getDocs(query(collection(db, 'users'), where('teamId', '==', score.teamId)));
@@ -123,8 +125,10 @@ export async function syncPendingScores(): Promise<number> {
                 targetType: (score.targetType ?? 'team') as 'team' | 'member',
                 memberKey: score.memberKey ?? null,
                 memberName: score.memberName ?? null,
+                customNote: score.customNote ?? null,
                 stageId: stageId,
                 actorId: score.registeredBy,
+                actorName: score.registeredByName ?? null,
             });
             synced++;
         } catch (err) {
