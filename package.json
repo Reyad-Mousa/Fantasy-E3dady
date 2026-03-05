@@ -13,6 +13,7 @@
     "import-accounts": "tsx import-accounts.ts",
     "enforce-stage-leaders": "tsx scripts/enforce-stage-leaders.ts",
     "sync-user-stage-claims": "tsx scripts/sync-user-stage-claims.ts",
+    "repair-member-stats": "tsx scripts/repair-member-stats.ts",
     "deploy": "vite build && firebase deploy"
   },
   "dependencies": {

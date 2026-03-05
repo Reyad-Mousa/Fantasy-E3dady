@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { collection, query, where, onSnapshot, orderBy, limit, getDocs } from 'firebase/firestore';
+import { useState, useEffect, useMemo, useRef } from 'react';
+import { collection, query, where, onSnapshot, limit, getDocs } from 'firebase/firestore';
 import { db } from '@/services/firebase';
 import { useAuth } from '@/context/AuthContext';
 import { StatsCard } from './ui/SharedUI';
@@ -11,142 +11,212 @@ import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Cell, Tooltip } from 
 import { usePerfProfile } from '@/hooks/usePerfProfile';
 
 interface HomeProps {
-  onNavigate?: (tab: string) => void;
+  onNavigate?: (tab: string, taskId?: string) => void;
 }
 
 export default function Home({ onNavigate }: HomeProps) {
   const { user } = useAuth();
 
   const [isMounted, setIsMounted] = useState(false);
-  const [stats, setStats] = useState({
-    rank: '--',
-    points: '--',
-    tasks: '--',
-    members: '--'
-  });
 
+  // ── Raw Firestore state (updated by independent real-time listeners) ──────
+  const [teamsData, setTeamsData] = useState<any[]>([]);
+  const [memberStatsByTeam, setMemberStatsByTeam] = useState<Record<string, number>>({});
+  const [tasksCount, setTasksCount] = useState<number | null>(null);
+  const [publicTasks, setPublicTasks] = useState<any[]>([]);
+  const [massTasks, setMassTasks] = useState<any[]>([]);
+
+  // ── Team detail modal ─────────────────────────────────────────────────────
   const [selectedTeam, setSelectedTeam] = useState<any | null>(null);
   const [teamMembersStats, setTeamMembersStats] = useState<any[]>([]);
   const [loadingMembers, setLoadingMembers] = useState(false);
+  const mobileChartContainerRef = useRef<HTMLDivElement | null>(null);
+  const [isMobileChartReady, setIsMobileChartReady] = useState(false);
 
-  const [stageStats, setStageStats] = useState<any[]>([]);
-  const [publicLeaderboard, setPublicLeaderboard] = useState<any[]>([]);
-  const [publicTasks, setPublicTasks] = useState<any[]>([]);
-
+  // ── Listener 1: member_stats → summed by teamId ───────────────────────────
   useEffect(() => {
-    // 1. Fetch stage aggregate data (points/teams count per stage)
-    const unsubTeams = onSnapshot(collection(db, 'teams'), (snap) => {
-      const allTeams = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      const aggregated = STAGES_LIST.map(stage => {
-        const stageTeams = allTeams.filter(t => (t as any).stageId === stage.id) as any[];
-        const totalPoints = stageTeams.reduce((sum, t) => sum + (t.totalPoints || 0), 0);
-
-        // Find top 5 teams for this stage
-        const sorted = [...stageTeams].sort((a, b) => (b.totalPoints || 0) - (a.totalPoints || 0));
-        const topTeams = sorted.slice(0, 5);
-
-        return {
-          name: stage.name,
-          points: totalPoints,
-          color: stage.color,
-          count: stageTeams.length,
-          topTeams: topTeams
-        };
+    const unsub = onSnapshot(collection(db, 'member_stats'), snap => {
+      const totals: Record<string, number> = {};
+      snap.docs.forEach(d => {
+        const data = d.data();
+        const tid = data.teamId as string | undefined;
+        if (tid) totals[tid] = (totals[tid] || 0) + (data.totalPoints || 0);
       });
-      setStageStats(aggregated);
+      setMemberStatsByTeam(totals);
+    }, () => { });
+    return unsub;
+  }, []);
 
-      // Handle user specific stats using allTeams to avoid index requirements
-      if (user) {
-        const isTeamUser = user.teamId || user.role === 'leader' || user.role === 'member';
+  // ── Listener 2: teams (raw docs) ──────────────────────────────────────────
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, 'teams'), snap => {
+      setTeamsData(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    }, () => { });
+    return unsub;
+  }, []);
 
-        if (isTeamUser) {
-          // Filter teams by user's stage if applicable for ranking
-          const stageTeams = user.stageId ? allTeams.filter((t: any) => t.stageId === user.stageId) : allTeams;
-          const sortedTeams = [...stageTeams].sort((a: any, b: any) => (b.totalPoints || 0) - (a.totalPoints || 0));
-
-          const myTeamIndex = sortedTeams.findIndex((t: any) => t.id === user.teamId || t.leaderId === user.uid);
-          if (myTeamIndex !== -1) {
-            const myTeam = sortedTeams[myTeamIndex] as any;
-            setStats(prev => ({
-              ...prev,
-              rank: `#${myTeamIndex + 1}`,
-              points: myTeam.totalPoints?.toString() || '0',
-              members: myTeam.memberCount?.toString() || '0'
-            }));
-          }
-        } else {
-          // SuperAdmin or Guest view
-          const totalPoints = allTeams.reduce((acc, t: any) => acc + (t.totalPoints || 0), 0);
-          const totalMembers = allTeams.reduce((acc, t: any) => acc + (t.memberCount || 0), 0);
-          setStats(prev => ({
-            ...prev,
-            rank: `${allTeams.length}`,
-            points: totalPoints.toString(),
-            members: totalMembers.toString()
-          }));
-        }
-      }
-    });
-
-    // 2. Public Previews (if not logged in)
-    let unsubPublicTasks = () => { };
-    if (!user) {
-      const qTasks = query(collection(db, 'tasks'), where('status', '==', 'active'), limit(4));
-      unsubPublicTasks = onSnapshot(qTasks, snap => {
-        setPublicTasks(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-      });
-    }
-
-    // 3. User specific tasks
-    let unsubUserTasks = () => { };
-    if (user) {
-      const tasksQ = query(collection(db, 'tasks'), where('status', '==', 'active'));
-      unsubUserTasks = onSnapshot(tasksQ, (snap) => {
-        setStats(prev => ({ ...prev, tasks: snap.size.toString() }));
-      });
-    }
-
-    return () => {
-      unsubTeams();
-      unsubPublicTasks();
-      unsubUserTasks();
-    };
+  // ── Listener 3: active tasks count (logged-in users) ─────────────────────
+  useEffect(() => {
+    if (!user) return;
+    const unsub = onSnapshot(
+      query(collection(db, 'tasks'), where('status', '==', 'active')),
+      snap => setTasksCount(snap.size),
+    );
+    return unsub;
   }, [user]);
+
+  // ── Listener 4: active mass tasks (shortcut) ───────────────────────────
+  useEffect(() => {
+    if (!user) {
+      setMassTasks([]);
+      return;
+    }
+    const unsub = onSnapshot(
+      query(collection(db, 'tasks'), where('status', '==', 'active'), where('type', '==', 'team')),
+      snap => {
+        const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        const massOnly = data.filter((t: any) =>
+          (t.title?.includes('قداس') || t.title?.includes('قداسس')) &&
+          (!t.stageId || t.stageId === user.stageId || user.role === 'super_admin')
+        );
+        setMassTasks(massOnly);
+      }
+    );
+    return unsub;
+  }, [user]);
+
+  // ── Listener 5: public task previews (guests only) ───────────────────────
+  useEffect(() => {
+    if (user) return;
+    const unsub = onSnapshot(
+      query(collection(db, 'tasks'), where('status', '==', 'active'), limit(4)),
+      snap => setPublicTasks(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
+    );
+    return unsub;
+  }, [user]);
+
+  // ── Derived: stage statistics for chart + sidebar ─────────────────────────
+  // Recomputes automatically whenever teamsData changes.
+  const stageStats = useMemo(() => {
+    const teamsWithPoints = teamsData.map(t => ({
+      ...t,
+      computedPoints: Math.round(t.totalPoints || 0),
+    }));
+    return STAGES_LIST.map(stage => {
+      const stageTeams = teamsWithPoints.filter(t => t.stageId === stage.id);
+      const totalPoints = stageTeams.reduce((sum, t) => sum + t.computedPoints, 0);
+      const sorted = [...stageTeams].sort((a, b) => b.computedPoints - a.computedPoints);
+      return { name: stage.name, points: totalPoints, color: stage.color, count: stageTeams.length, topTeams: sorted.slice(0, 5) };
+    });
+  }, [teamsData]);
+
+  // ── Derived: stats cards (rank / points / tasks / members) ───────────────
+  const stats = useMemo(() => {
+    const tasks = tasksCount !== null ? tasksCount.toString() : '--';
+    const fallback = { rank: '--', points: '--', tasks, members: '--' };
+    if (!user || teamsData.length === 0) return fallback;
+
+    const teamsWithPoints = teamsData.map(t => ({
+      ...t,
+      computedPoints: t.totalPoints || 0,
+    }));
+
+    const isTeamUser = user.teamId || user.role === 'leader' || user.role === 'member';
+    if (isTeamUser) {
+      const stageTeams = user.stageId
+        ? teamsWithPoints.filter(t => t.stageId === user.stageId)
+        : teamsWithPoints;
+      const sortedTeams = [...stageTeams].sort((a, b) => b.computedPoints - a.computedPoints);
+      const myTeamIndex = sortedTeams.findIndex(t => t.id === user.teamId || t.leaderId === user.uid);
+      if (myTeamIndex !== -1) {
+        const myTeam = sortedTeams[myTeamIndex];
+        return {
+          rank: `#${myTeamIndex + 1}`,
+          points: Math.round(Number(myTeam.computedPoints)).toString(),
+          tasks,
+          members: myTeam.memberCount?.toString() || '0',
+        };
+      }
+    } else {
+      const totalPoints = teamsWithPoints.reduce((acc, t) => acc + t.computedPoints, 0);
+      const totalMembers = teamsWithPoints.reduce((acc, t) => acc + (t.memberCount || 0), 0);
+      return { rank: `${teamsWithPoints.length}`, points: totalPoints.toString(), tasks, members: totalMembers.toString() };
+    }
+
+    return fallback;
+  }, [user, teamsData, memberStatsByTeam, tasksCount]);
+  const { isMobile, prefersLowMotion } = usePerfProfile();
+  const animationsEnabled = !prefersLowMotion;
 
   useEffect(() => {
     setIsMounted(true);
   }, []);
 
   useEffect(() => {
-    if (!selectedTeam || !selectedTeam.members || selectedTeam.members.length === 0) {
+    if (!isMounted || !isMobile) {
+      setIsMobileChartReady(false);
+      return;
+    }
+
+    const container = mobileChartContainerRef.current;
+    if (!container) {
+      setIsMobileChartReady(false);
+      return;
+    }
+
+    const updateReady = () => {
+      const { width, height } = container.getBoundingClientRect();
+      setIsMobileChartReady(width > 0 && height > 0);
+    };
+
+    updateReady();
+    const rafId = window.requestAnimationFrame(updateReady);
+    const resizeObserver = new ResizeObserver(updateReady);
+    resizeObserver.observe(container);
+
+    return () => {
+      window.cancelAnimationFrame(rafId);
+      resizeObserver.disconnect();
+    };
+  }, [isMounted, isMobile]);
+
+  useEffect(() => {
+    if (!selectedTeam) {
       setTeamMembersStats([]);
       return;
     }
 
     setLoadingMembers(true);
-    // Fetch member_stats for this team
     const fetchMemberStats = async () => {
       try {
-        const statsQ = query(collection(db, 'member_stats'), where('teamId', '==', selectedTeam.id));
-        const snap = await getDocs(statsQ);
-        const statsDocs = snap.docs.map(d => d.data());
+        const statsSnap = await getDocs(query(collection(db, 'member_stats'), where('teamId', '==', selectedTeam.id)));
+        const statsDocs = statsSnap.docs.map(d => d.data());
 
-        // Merge the selectedTeam.members (array of names) with their points
-        const mergedMembers = selectedTeam.members.map((memberName: string) => {
-          const stat = statsDocs.find((s: any) => s.memberName === memberName);
-          return {
-            name: memberName,
-            points: stat?.totalPoints || 0
-          };
-        });
+        const seen = new Set<string>();
+        const merged: { name: string; points: number }[] = [];
 
-        // Sort descending
-        mergedMembers.sort((a, b) => b.points - a.points);
-        setTeamMembersStats(mergedMembers);
-      } catch (err) {
-        console.error('Error fetching member stats:', err);
-        // Fallback: just list members with 0 points
-        const fallback = selectedTeam.members.map((name: string) => ({ name, points: 0 }));
+        for (const memberName of (selectedTeam.members || [])) {
+          const name = String(memberName || '').trim();
+          if (!name || seen.has(name.toLowerCase())) continue;
+          seen.add(name.toLowerCase());
+          const stat = statsDocs.find(s => (s as any).memberName?.toLowerCase().trim() === name.toLowerCase());
+          merged.push({ name, points: Math.round((stat as any)?.totalPoints || 0) });
+        }
+
+        // Lastly, add any member stats documents that weren't caught in the loops above
+        for (const s of statsDocs) {
+          const statData = s as any;
+          const nameLower = (statData.memberName || '').toLowerCase().trim();
+          if (nameLower && !seen.has(nameLower)) {
+            seen.add(nameLower);
+            merged.push({ name: statData.memberName, points: Math.round(statData.totalPoints || 0) });
+          }
+        }
+
+        merged.sort((a, b) => b.points - a.points);
+        setTeamMembersStats(merged);
+      } catch {
+        const fallback = (selectedTeam.members || []).map((name: string) => ({ name, points: 0 }));
         setTeamMembersStats(fallback);
       } finally {
         setLoadingMembers(false);
@@ -156,12 +226,10 @@ export default function Home({ onNavigate }: HomeProps) {
     fetchMemberStats();
   }, [selectedTeam]);
 
-  const navigate = (tab: string) => {
-    if (onNavigate) onNavigate(tab);
-  };
 
-  const { isMobile, prefersLowMotion } = usePerfProfile();
-  const animationsEnabled = !prefersLowMotion;
+  const navigate = (tab: string, taskId?: string) => {
+    if (onNavigate) onNavigate(tab, taskId);
+  };
 
   const mobileChartData = stageStats.map((stage) => ({
     ...stage,
@@ -203,6 +271,47 @@ export default function Home({ onNavigate }: HomeProps) {
         </div>
       </motion.div>
 
+      {/* Mass Task Shortcut - Only for logged in users */}
+      <AnimatePresence>
+        {user && massTasks.length > 0 && (
+          <motion.div
+            initial={{ opacity: 0, y: -20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -20 }}
+            className="grid gap-4"
+          >
+            {massTasks.map((task) => (
+              <div
+                key={task.id}
+                onClick={() => navigate('tasks', task.id)}
+                className="bg-purple-600/20 border border-purple-500/40 rounded-2xl p-4 flex items-center justify-between cursor-pointer hover:bg-purple-600/30 transition-all group shadow-lg shadow-purple-900/20"
+              >
+                <div className="flex items-center gap-4">
+                  <div className="w-12 h-12 rounded-xl bg-purple-500/20 flex items-center justify-center text-2xl shadow-inner border border-purple-500/30 group-hover:scale-110 transition-transform">
+                    ⛪
+                  </div>
+                  <div>
+                    <h3 className="font-black text-white text-sm sm:text-base">{task.title} (اختصار تسجيل الحضور)</h3>
+                    <p className="text-purple-300/80 text-[10px] sm:text-xs font-bold mt-0.5">
+                      انقر هنا لتسجيل حضور فريقك في القداس مباشرة ⚡
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3">
+                  <div className="hidden sm:flex flex-col items-end mr-2">
+                    <span className="text-white font-black text-sm">+{task.points}</span>
+                    <span className="text-purple-300 text-[9px] uppercase font-black tracking-tighter">نقطة للفرد</span>
+                  </div>
+                  <div className="p-2 rounded-full bg-purple-500/20 text-purple-300 group-hover:translate-x-[-4px] transition-transform">
+                    <ArrowLeft className="w-5 h-5" />
+                  </div>
+                </div>
+              </div>
+            ))}
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Main Content Grid */}
       <div className="grid lg:grid-cols-12 gap-6">
 
@@ -228,9 +337,14 @@ export default function Home({ onNavigate }: HomeProps) {
 
           {isMobile ? (
             <div className="rounded-2xl border border-white/5 bg-white/[0.03] p-3">
-              <div className="h-[240px] w-full" dir="ltr">
-                {isMounted && (
-                  <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
+              <div
+                ref={mobileChartContainerRef}
+                className="h-[240px] w-full"
+                style={{ minWidth: 10, minHeight: 240 }}
+                dir="ltr"
+              >
+                {isMounted && isMobileChartReady && (
+                  <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0} debounce={1}>
                     <BarChart
                       data={mobileChartData}
                       margin={{ top: 8, bottom: 2 }}
@@ -385,7 +499,7 @@ export default function Home({ onNavigate }: HomeProps) {
                             </div>
                             <div className="text-right flex flex-col items-end justify-center">
                               <div className="flex items-center gap-1.5 opacity-80 group-hover:opacity-100 transition-opacity">
-                                <div className="text-base font-black text-white">{team.totalPoints || 0}</div>
+                                <div className="text-base font-black text-white">{team.computedPoints || 0}</div>
                                 {(team.members && team.members.length > 0) && (
                                   <div className="flex items-center gap-1 text-[10px] text-text-muted bg-white/5 px-1.5 py-0.5 rounded border border-white/5">
                                     <Users className="w-3 h-3 text-text-muted" />
@@ -395,7 +509,7 @@ export default function Home({ onNavigate }: HomeProps) {
                               </div>
                               {stageData && stageData.points > 0 && (
                                 <div className="text-[10px] text-text-muted font-bold opacity-60 group-hover:opacity-100 transition-opacity mt-0.5" dir="ltr">
-                                  {(((team.totalPoints || 0) / stageData.points) * 100).toFixed(1)}%
+                                  {(((team.computedPoints || 0) / stageData.points) * 100).toFixed(1)}%
                                 </div>
                               )}
                             </div>
@@ -478,7 +592,7 @@ export default function Home({ onNavigate }: HomeProps) {
                   <div className="flex items-center gap-3 flex-wrap">
                     <span className="text-sm bg-accent/10 text-accent px-2 py-1 rounded-lg font-bold flex items-center gap-1.5 border border-accent/20">
                       <Trophy className="w-3.5 h-3.5 fill-accent" />
-                      {selectedTeam.totalPoints || 0} نقطة
+                      {Math.round(selectedTeam.totalPoints || 0)} نقطة
                     </span>
                     <span className="text-sm bg-white/5 text-text-primary px-2 py-1 rounded-lg font-bold flex items-center gap-1.5 border border-white/10">
                       <Users className="w-3.5 h-3.5 text-text-muted" />
@@ -527,11 +641,14 @@ export default function Home({ onNavigate }: HomeProps) {
                             {member.points}
                             <span className="text-[10px] text-text-muted font-bold">نقطة</span>
                           </span>
-                          {selectedTeam.totalPoints > 0 && (
-                            <span className="text-[10px] text-text-muted/60 font-bold mt-1 pr-1" dir="ltr">
-                              {((member.points / selectedTeam.totalPoints) * 100).toFixed(1)}%
-                            </span>
-                          )}
+                          {(() => {
+                            const teamTotal = selectedTeam.totalPoints || 0;
+                            return teamTotal > 0 ? (
+                              <span className="text-[10px] text-text-muted/60 font-bold mt-1 pr-1" dir="ltr">
+                                {((member.points / teamTotal) * 100).toFixed(1)}%
+                              </span>
+                            ) : null;
+                          })()}
                         </div>
                       </div>
                     ))

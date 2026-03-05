@@ -46,9 +46,11 @@ function AppContent() {
   const { user, isLoading } = useAuth();
   const [activeTab, setActiveTab] = useState(getTabFromHash);
   const [showLogin, setShowLogin] = useState(false);
+  const [pendingTaskId, setPendingTaskId] = useState<string | null>(null);
 
-  const handleNavigate = useCallback((tab: string) => {
+  const handleNavigate = useCallback((tab: string, taskId?: string) => {
     setActiveTab(tab);
+    setPendingTaskId(taskId || null);
     window.location.hash = tab === 'home' ? '' : tab;
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }, []);
@@ -83,7 +85,7 @@ function AppContent() {
   const renderContent = () => {
     switch (activeTab) {
       case 'home':
-        return <Home onNavigate={handleNavigate} />;
+        return <Home onNavigate={(tab, taskId) => handleNavigate(tab, taskId)} />;
       case 'leaderboard':
         return <Leaderboard onBack={() => handleNavigate('home')} />;
       case 'teams':
@@ -91,7 +93,7 @@ function AppContent() {
           ? <TeamsPage onBack={() => handleNavigate('home')} />
           : <Home onNavigate={handleNavigate} />;
       case 'tasks':
-        return <TasksPage onBack={() => handleNavigate('home')} />;
+        return <TasksPage onBack={() => handleNavigate('home')} initialTaskId={pendingTaskId} />;
       case 'scores':
         return user && ['super_admin', 'admin', 'leader'].includes(user.role)
           ? <ScoreRegistration onBack={() => handleNavigate('home')} />

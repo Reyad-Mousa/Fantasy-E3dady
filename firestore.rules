@@ -170,7 +170,7 @@ service cloud.firestore {
     }
 
     match /member_stats/{memberKey} {
-      allow read: if isAuthenticated() && (isSuperAdmin() || ((isAdmin() || isLeader()) && isSameStage(resource.data.stageId)));
+      allow read: if true;
       allow create: if isAuthenticated() && (isSuperAdmin() || ((isAdmin() || isLeader()) && isSameStage(request.resource.data.stageId)));
       allow update: if isAuthenticated() && (
         isSuperAdmin() ||
@@ -187,6 +187,19 @@ service cloud.firestore {
         ((isAdmin() || isLeader()) && isSameStage(resource.data.stageId))
       );
       allow create: if isAuthenticated() && isValidAuditLogCreate();
+      allow update, delete: if isSuperAdmin();
+    }
+
+    match /activities/{activityId} {
+      // All authenticated users with a valid role can read activities.
+      // Stage-level filtering (my stage + global) is enforced on the client side
+      // in RecentActivitiesPage.tsx, because Firestore cannot evaluate
+      // resource.data field conditions on a broad collection query/listener.
+      allow read: if isAuthenticated() && (
+        isSuperAdmin() || isAdmin() || isLeader()
+      );
+      // Any authenticated user can write an activity (fire-and-forget logging)
+      allow create: if isAuthenticated();
       allow update, delete: if isSuperAdmin();
     }
   }

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { collection, onSnapshot, doc, setDoc, updateDoc, deleteDoc, serverTimestamp, query, orderBy, getDocs, where, writeBatch } from 'firebase/firestore';
 import { db } from '@/services/firebase';
 import { useAuth, canManageUsers, canExportReports } from '@/context/AuthContext';
@@ -13,6 +13,7 @@ import * as XLSX from 'xlsx';
 import StageFilterBar, { FilterValue } from './StageFilterBar';
 import StageBadge from './StageBadge';
 import { STAGES_LIST, StageId } from '@/config/stages';
+import { logActivity } from '@/services/activityLogger';
 
 interface TeamData {
     id: string;
@@ -62,6 +63,8 @@ export default function SuperAdminPanel({ onBack }: { onBack?: () => void }) {
     const [tasks, setTasks] = useState<TaskData[]>([]);
     const [loading, setLoading] = useState(true);
     const [recalculating, setRecalculating] = useState(false);
+    // member_stats: teamId → total individual points
+    const [memberStatsByTeam, setMemberStatsByTeam] = useState<Record<string, number>>({});
 
     // Team form
     const [showTeamModal, setShowTeamModal] = useState(false);
@@ -98,6 +101,20 @@ export default function SuperAdminPanel({ onBack }: { onBack?: () => void }) {
         return () => { unsub1(); unsub2(); unsub3(); unsub4(); };
     }, [stageFilter]);
 
+    // Independent listener for member_stats (not affected by stageFilter changes)
+    useEffect(() => {
+        const unsub = onSnapshot(collection(db, 'member_stats'), snap => {
+            const totals: Record<string, number> = {};
+            snap.docs.forEach(d => {
+                const data = d.data();
+                const tid = data.teamId as string | undefined;
+                if (tid) totals[tid] = (totals[tid] || 0) + (data.totalPoints || 0);
+            });
+            setMemberStatsByTeam(totals);
+        }, () => { });
+        return unsub;
+    }, []);
+
     // =========================
     // Team Management
     // =========================
@@ -105,21 +122,49 @@ export default function SuperAdminPanel({ onBack }: { onBack?: () => void }) {
         e.preventDefault();
         try {
             if (editingTeam) {
+                const oldName = editingTeam.name;
+                const newName = teamName;
                 await updateDoc(doc(db, 'teams', editingTeam.id), {
-                    name: teamName,
+                    name: newName,
                     leaderId: teamLeader || editingTeam.leaderId,
                     stageId: teamStageId || null,
                 });
+                if (oldName !== newName) {
+                    logActivity({
+                        kind: 'audit',
+                        operation: 'update',
+                        entityType: 'team',
+                        entityId: editingTeam.id,
+                        entityName: newName,
+                        stageId: teamStageId || editingTeam.stageId || null,
+                        details: `الاسم السابق: ${oldName}`,
+                        actorId: user!.uid,
+                        actorName: user!.name,
+                        actorRole: user!.role,
+                    });
+                }
                 showToast('تم تحديث الفريق');
             } else {
                 const id = `team_${Date.now()}`;
+                const finalStageId = teamStageId || null;
                 await setDoc(doc(db, 'teams', id), {
                     name: teamName,
                     leaderId: teamLeader || '',
-                    stageId: teamStageId || null,
+                    stageId: finalStageId,
                     totalPoints: 0,
                     memberCount: 0,
                     createdAt: serverTimestamp(),
+                });
+                logActivity({
+                    kind: 'audit',
+                    operation: 'create',
+                    entityType: 'team',
+                    entityId: id,
+                    entityName: teamName,
+                    stageId: finalStageId,
+                    actorId: user!.uid,
+                    actorName: user!.name,
+                    actorRole: user!.role,
                 });
                 showToast('تم إنشاء الفريق');
             }
@@ -133,6 +178,17 @@ export default function SuperAdminPanel({ onBack }: { onBack?: () => void }) {
         if (!deleteTeamConfirm) return;
         try {
             await deleteDoc(doc(db, 'teams', deleteTeamConfirm.id));
+            logActivity({
+                kind: 'audit',
+                operation: 'delete',
+                entityType: 'team',
+                entityId: deleteTeamConfirm.id,
+                entityName: deleteTeamConfirm.name,
+                stageId: deleteTeamConfirm.stageId || null,
+                actorId: user!.uid,
+                actorName: user!.name,
+                actorRole: user!.role,
+            });
             showToast('تم حذف الفريق');
             setDeleteTeamConfirm(null);
         } catch {
@@ -157,39 +213,206 @@ export default function SuperAdminPanel({ onBack }: { onBack?: () => void }) {
             const allScores = scoresSnap.docs.map(d => ({ id: d.id, ...d.data() } as any));
             console.log(`Fetched ${allScores.length} scores.`);
 
-            // 2. Fetch current teams and member_stats to reset
-            const teamsSnap = await getDocs(collection(db, 'teams'));
-            const memberStatsSnap = await getDocs(collection(db, 'member_stats'));
+            // 2. Safeguard: If no scores found, abort to prevent accidental wipe
+            if (allScores.length === 0) {
+                showToast('❌ لم يتم العثور على أي سجلات نقاط. تم إلغاء العملية لحماية البيانات.', 'error');
+                setRecalculating(false);
+                return;
+            }
 
+            // 3. Fetch dependencies locally
+            const [teamsSnap, memberStatsSnap, usersSnap] = await Promise.all([
+                getDocs(collection(db, 'teams')),
+                getDocs(collection(db, 'member_stats')),
+                getDocs(collection(db, 'users'))
+            ]);
+
+            const allUsers = usersSnap.docs.map(d => ({ id: d.id, ...d.data() } as any));
+            const teamsById = new Map(teamsSnap.docs.map(d => [d.id, d.data() as any]));
             const teamTotals: Record<string, number> = {};
-            const memberTotals: Record<string, number> = {};
-            const memberStatsMetadata: Record<string, any> = {};
+            const memberStatsMap: Record<string, any> = {};
 
-            // Initialize totals to 0 and preserve metadata
+            const asNonEmptyString = (value: unknown): string | null =>
+                (typeof value === 'string' && value.trim()) ? value.trim() : null;
+
+            const normalizeStageId = (value: unknown): StageId | null => {
+                if (value === 'grade7' || value === 'grade8' || value === 'grade9') {
+                    return value;
+                }
+                return null;
+            };
+
+            const getTeamStageId = (teamId: string | null | undefined): StageId | null => {
+                if (!teamId) return null;
+                return normalizeStageId(teamsById.get(teamId)?.stageId);
+            };
+
+            const parseLegacyMemberKey = (memberKey: string): { teamId: string; memberName: string | null } | null => {
+                const match = /^m:(team_\d+)_(.+)$/.exec(memberKey);
+                if (!match) return null;
+                const parsedName = match[2].replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
+                return {
+                    teamId: match[1],
+                    memberName: parsedName || null,
+                };
+            };
+
+            // Initialize totals to 0 for all found teams and members
             teamsSnap.forEach(d => teamTotals[d.id] = 0);
             memberStatsSnap.forEach(d => {
-                memberTotals[d.id] = 0;
-                memberStatsMetadata[d.id] = d.data();
+                const current = d.data() as any;
+                memberStatsMap[d.id] = {
+                    ...current,
+                    memberKey: asNonEmptyString(current.memberKey) || d.id,
+                    stageId: normalizeStageId(current.stageId),
+                    totalPoints: 0,
+                };
             });
 
-            // 3. Rebuild totals from scores
-            for (const score of allScores) {
-                const pts = score.type === 'earn' ? Math.abs(score.points) : -Math.abs(score.points);
+            // 4. Identification pass: Find team tasks that already HAVE individual member scores
+            const teamTasksWithMemberScores = new Set<string>();
+            allScores.forEach(s => {
+                const isMemberEntry = s.memberKey || s.targetType === 'member' || s.memberUserId;
+                if (isMemberEntry && s.teamId && s.taskId) {
+                    teamTasksWithMemberScores.add(`${s.teamId}_${s.taskId}`);
+                }
+            });
 
-                if (score.applyToTeamTotal && score.teamId) {
-                    teamTotals[score.teamId] = (teamTotals[score.teamId] || 0) + pts;
+            // Helper to get or create member stats object
+            const getOrCreateMemberStat = (
+                mKey: string,
+                {
+                    teamId,
+                    memberName,
+                    memberUserId,
+                    stageId,
+                }: {
+                    teamId?: string | null;
+                    memberName?: string | null;
+                    memberUserId?: string | null;
+                    stageId?: StageId | null;
+                }
+            ) => {
+                if (!memberStatsMap[mKey]) {
+                    memberStatsMap[mKey] = {
+                        memberKey: mKey,
+                        totalPoints: 0,
+                    };
                 }
 
-                if (score.targetType === 'member' && score.memberKey) {
-                    memberTotals[score.memberKey] = (memberTotals[score.memberKey] || 0) + pts;
+                const stat = memberStatsMap[mKey];
+                const legacyInfo = parseLegacyMemberKey(mKey);
+
+                const resolvedTeamId = asNonEmptyString(teamId) || legacyInfo?.teamId || null;
+                const resolvedMemberName = asNonEmptyString(memberName) || legacyInfo?.memberName || null;
+                const resolvedMemberUserId = asNonEmptyString(memberUserId);
+                const resolvedStageId =
+                    normalizeStageId(stageId) ||
+                    getTeamStageId(resolvedTeamId);
+
+                if (!asNonEmptyString(stat.memberKey)) stat.memberKey = mKey;
+                if (!asNonEmptyString(stat.teamId) && resolvedTeamId) stat.teamId = resolvedTeamId;
+                if (!asNonEmptyString(stat.memberName) && resolvedMemberName) stat.memberName = resolvedMemberName;
+                if (!asNonEmptyString(stat.memberUserId) && resolvedMemberUserId) stat.memberUserId = resolvedMemberUserId;
+                if (!normalizeStageId(stat.stageId) && resolvedStageId) stat.stageId = resolvedStageId;
+
+                return stat;
+            };
+
+            // 5. Distribution pass: Build accurate totals
+            let processedCount = 0;
+            for (const score of allScores) {
+                // Robust point extraction
+                const rawPoints = score.points ?? score.score ?? 0;
+                const basePts = typeof rawPoints === 'number' ? rawPoints : parseFloat(rawPoints) || 0;
+                // Default to 'earn' unless explicitly 'deduct'
+                const pts = score.type === 'deduct' ? -Math.abs(basePts) : Math.abs(basePts);
+
+                if (pts === 0) continue;
+                processedCount++;
+
+                // Team Totals: assume true if missing
+                const teamId = score.teamId || score.team_id;
+                const shouldApplyToTeam = teamId && score.applyToTeamTotal !== false;
+                if (shouldApplyToTeam) {
+                    teamTotals[teamId] = (teamTotals[teamId] || 0) + pts;
+                }
+
+                // Member Totals
+                const memberKey = score.memberKey || score.member_key;
+                if (memberKey) {
+                    // Direct individual score
+                    const stat = getOrCreateMemberStat(memberKey, {
+                        teamId,
+                        memberName: score.memberName,
+                        memberUserId: score.memberUserId,
+                        stageId: normalizeStageId(score.stageId) || getTeamStageId(teamId),
+                    });
+                    stat.totalPoints += pts;
+                } else if (teamId && (score.taskId || score.task_id)) {
+                    // Potential legacy team score to be distributed
+                    const key = `${teamId}_${score.taskId || score.task_id}`;
+                    if (!teamTasksWithMemberScores.has(key)) {
+                        // Distribute to current team members
+                        const teamDoc = teamsById.get(teamId);
+                        const teamStageId = normalizeStageId(score.stageId) || getTeamStageId(teamId);
+                        const teamMemberNames = teamDoc?.members || [];
+                        const teamUserMembers = allUsers.filter(u => u.teamId === teamId && u.role === 'member');
+
+                        // Map of member keys to their info
+                        const membersToAdd = new Map<string, { name?: string; uid?: string | null; stageId?: StageId | null }>();
+
+                        teamUserMembers.forEach(u => {
+                            const userName = asNonEmptyString(u.name);
+                            if (!userName) return;
+                            membersToAdd.set(`u:${u.id}`, {
+                                name: userName,
+                                uid: u.id,
+                                stageId: normalizeStageId(u.stageId) || teamStageId,
+                            });
+                        });
+                        teamMemberNames.forEach((name: string) => {
+                            if (name) {
+                                const normalized = name.trim().toLowerCase();
+                                membersToAdd.set(`m:${teamId}_${normalized}`, {
+                                    name: name.trim(),
+                                    uid: null,
+                                    stageId: teamStageId,
+                                });
+                            }
+                        });
+
+                        if (membersToAdd.size > 0) {
+                            const perMember = pts / membersToAdd.size;
+                            membersToAdd.forEach((info, mKey) => {
+                                const stat = getOrCreateMemberStat(mKey, {
+                                    teamId,
+                                    memberName: info.name,
+                                    memberUserId: info.uid,
+                                    stageId: info.stageId || teamStageId,
+                                });
+                                stat.totalPoints += perMember;
+                            });
+                        }
+                    }
                 }
             }
 
-            // 4. Batch update Firestore in chunks of 400
+            let overallComputedTeamPoints = 0;
+            // 6. Batch update Firestore in chunks of 400
             const updates = [
-                ...Object.entries(teamTotals).map(([id, total]) => ({ type: 'team', id, data: { totalPoints: total } })),
-                ...Object.entries(memberTotals).map(([id, total]) => ({ type: 'member', id, data: { totalPoints: total } }))
+                ...Object.entries(teamTotals).map(([id, total]) => {
+                    overallComputedTeamPoints += total;
+                    return { type: 'team', id, data: { totalPoints: total } };
+                }),
+                ...Object.entries(memberStatsMap).map(([id, data]) => ({ type: 'member', id, data }))
             ];
+
+            if (updates.length === 0) {
+                showToast('لم يتم العثور على تحديثات لتطبيقها', 'warning');
+                setRecalculating(false);
+                return;
+            }
 
             console.log(`Applying ${updates.length} updates across teams and members.`);
 
@@ -207,7 +430,7 @@ export default function SuperAdminPanel({ onBack }: { onBack?: () => void }) {
                 console.log(`Committed batch ${Math.floor(i / CHUNK_SIZE) + 1}`);
             }
 
-            showToast('تم إعادة حساب جميع النقاط بنجاح ✅');
+            showToast(`✅ تم! السجلات: ${processedCount} | مجموع نقاط الفرق: ${overallComputedTeamPoints}`, 'success');
             setShowRecalculateConfirm(false);
         } catch (err: any) {
             console.error('Recalculate error detailed:', err);
@@ -221,29 +444,45 @@ export default function SuperAdminPanel({ onBack }: { onBack?: () => void }) {
     const handleClearLogs = async () => {
         setClearingLogs(true);
         try {
-            // 1. Fetch current scores and logs
-            const scoresSnap = await getDocs(collection(db, 'scores'));
-            const logsSnap = await getDocs(collection(db, 'logs'));
+            // Fetch all collections that make up the activity/score history, plus member_stats to reset individuals
+            const [scoresSnap, logsSnap, activitiesSnap, memberStatsSnap, teamsSnap] = await Promise.all([
+                getDocs(collection(db, 'scores')),
+                getDocs(collection(db, 'logs')),
+                getDocs(collection(db, 'activities')),
+                getDocs(collection(db, 'member_stats')),
+                getDocs(collection(db, 'teams')),
+            ]);
 
-            const allRefs = [
+            const allRefsToDelete = [
                 ...scoresSnap.docs.map(d => d.ref),
-                ...logsSnap.docs.map(d => d.ref)
+                ...logsSnap.docs.map(d => d.ref),
+                ...activitiesSnap.docs.map(d => d.ref),
+                ...memberStatsSnap.docs.map(d => d.ref),
             ];
 
             const CHUNK_SIZE = 400;
-            for (let i = 0; i < allRefs.length; i += CHUNK_SIZE) {
-                const chunk = allRefs.slice(i, i + CHUNK_SIZE);
+            // First, delete logs, scores, activities, and member_stats
+            for (let i = 0; i < allRefsToDelete.length; i += CHUNK_SIZE) {
+                const chunk = allRefsToDelete.slice(i, i + CHUNK_SIZE);
                 const batch = writeBatch(db);
                 chunk.forEach(ref => batch.delete(ref));
                 await batch.commit();
                 console.log(`Deleted batch ${Math.floor(i / CHUNK_SIZE) + 1}`);
             }
 
-            showToast('تم مسح سجل النشاطات والعمليات بنجاح 🗑️');
+            // Next, reset all team points to 0
+            for (let i = 0; i < teamsSnap.docs.length; i += CHUNK_SIZE) {
+                const chunk = teamsSnap.docs.slice(i, i + CHUNK_SIZE);
+                const batch = writeBatch(db);
+                chunk.forEach(teamDoc => batch.update(teamDoc.ref, { totalPoints: 0 }));
+                await batch.commit();
+            }
+
+            showToast('تم مسح سجل النشاطات والأپعاد وإعادة تصفير النقاط بنجاح 🗑️');
             setShowClearLogsConfirm(false);
         } catch (err: any) {
             console.error('Clear logs error:', err);
-            showToast('فشل في مسح السجل', 'error');
+            showToast('فشل في مسح السجل وتصفير النقاط', 'error');
         } finally {
             setClearingLogs(false);
         }
@@ -322,6 +561,14 @@ export default function SuperAdminPanel({ onBack }: { onBack?: () => void }) {
         }
     };
 
+    // Use team totalPoints as source of truth (same as Home page)
+    const totalPoints = useMemo(
+        () => Math.round(teams.reduce((sum, t) => sum + (t.totalPoints || 0), 0)),
+        [teams]
+    );
+    const totalMembers = users.filter(u => u.role === 'member').length;
+    const activeTasksCount = tasks.filter(t => t.status === 'active').length;
+
     if (!user || user.role !== 'super_admin') {
         return (
             <div dir="rtl" className="glass-card p-12 text-center">
@@ -340,10 +587,6 @@ export default function SuperAdminPanel({ onBack }: { onBack?: () => void }) {
             </div>
         );
     }
-
-    const totalPoints = teams.reduce((sum, t) => sum + t.totalPoints, 0);
-    const totalMembers = users.filter(u => u.role === 'member').length;
-    const activeTasksCount = tasks.filter(t => t.status === 'active').length;
 
     const tabs: { key: AdminTab; label: string; icon: React.ReactNode }[] = [
         { key: 'overview', label: 'نظرة عامة', icon: <PieChart className="w-4 h-4" /> },
@@ -505,7 +748,7 @@ export default function SuperAdminPanel({ onBack }: { onBack?: () => void }) {
                                     <div className="flex items-center gap-4 mt-4">
                                         <div className="flex items-center gap-1.5 text-xs text-text-secondary">
                                             <Trophy className="w-3.5 h-3.5 text-accent" />
-                                            {team.totalPoints} نقطة
+                                            {memberStatsByTeam[team.id] ?? team.totalPoints ?? 0} نقطة
                                         </div>
                                         <div className="flex items-center gap-1.5 text-xs text-text-secondary">
                                             <Users className="w-3.5 h-3.5" />
@@ -618,7 +861,7 @@ export default function SuperAdminPanel({ onBack }: { onBack?: () => void }) {
                             مسح سجل النشاطات والعمليات
                         </h3>
                         <p className="text-text-secondary text-sm mb-4">
-                            تحذير: سيتم حذف جميع سجلات "النشاطات" و "النقاط المسجلة" نهائياً. المسح سيجعل صفحة النشاطات فارغة، ولكن حذف سجلات النقاط سيمنعك من استخدام ميزة "إعادة حساب النقاط" لاحقاً (لأن السجلات الأصلية ستُحذف).
+                            تحذير: سيتم حذف جميع سجلات "النشاطات" و "النقاط المسجلة" نهائياً، وسيتم **تصفير نقاط جميع الفرق والأفراد**. المسح سيجعل المنظومة تبدأ من الصفر (موسم جديد).
                         </p>
                         <button
                             onClick={() => setShowClearLogsConfirm(true)}

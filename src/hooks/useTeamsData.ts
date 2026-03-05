@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { collection, onSnapshot, doc, setDoc, updateDoc, deleteDoc, serverTimestamp, arrayUnion, arrayRemove, query, where, addDoc } from 'firebase/firestore';
 import { db } from '@/services/firebase';
+import { logActivity } from '@/services/activityLogger';
 
 export interface TeamData {
     id: string;
@@ -62,6 +63,19 @@ export function useTeamsData(user: any, showToast: (msg: string, type?: 'success
                 details: details || null,
                 timestamp: serverTimestamp(),
                 source: 'client',
+            });
+            // Mirror to dedicated activities collection
+            logActivity({
+                kind: 'audit',
+                operation,
+                entityType,
+                entityId,
+                entityName: entityName.trim() || 'غير معروف',
+                stageId: normalizedStageId,
+                actorId: user.uid,
+                actorName: user.name || null,
+                actorRole: user.role || null,
+                details: details || null,
             });
         } catch (err) {
             console.warn('Failed to write audit log:', err);

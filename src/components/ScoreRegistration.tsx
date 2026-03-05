@@ -4,6 +4,7 @@ import { db } from '@/services/firebase';
 import { useAuth, canRegisterScores } from '@/context/AuthContext';
 import { addPendingScore, getPendingSyncCount } from '@/services/offlineDb';
 import { isOnline, syncPendingScores } from '@/services/syncService';
+import { logActivity } from '@/services/activityLogger';
 import { SectionHeader, SyncBadge, useOnlineStatus, useToast } from './ui/SharedUI';
 import { motion, AnimatePresence } from 'motion/react';
 import { Check, Clock, Plus, RefreshCw, TrendingDown, TrendingUp, UserRound, Users, X } from 'lucide-react';
@@ -221,6 +222,7 @@ export default function ScoreRegistration({ onBack }: { onBack?: () => void }) {
         setSubmitting(true);
         const pointChange = scoreType === 'earn' ? Math.abs(points) : -Math.abs(points);
         const teamDoc = getSelectedTeam();
+        const resolvedStageId = teamDoc?.stageId || user.stageId || null;
         const teamMultiplier = availableMembers.length > 0 ? availableMembers.length : 1;
 
         try {
@@ -239,7 +241,7 @@ export default function ScoreRegistration({ onBack }: { onBack?: () => void }) {
                     source: scoreSource,
                     registeredBy: user.uid,
                     registeredByName: user.name,
-                    stageId: teamDoc?.stageId || user.stageId || null,
+                    stageId: resolvedStageId,
                     memberKey: null,
                     memberUserId: null,
                     memberName: null,
@@ -250,19 +252,55 @@ export default function ScoreRegistration({ onBack }: { onBack?: () => void }) {
                 if (isOnline()) {
                     await addDoc(collection(db, 'scores'), { ...scoreData, timestamp: serverTimestamp(), syncedAt: serverTimestamp(), pendingSync: false });
                     await updateDoc(doc(db, 'teams', selectedTeam), { totalPoints: increment(totalTeamPointChange) });
+                    // Log to activities
+                    logActivity({
+                        kind: 'score',
+                        teamId: selectedTeam,
+                        teamName: teamDoc?.name,
+                        taskId: selectedTask,
+                        taskTitle: getSelectedTask()?.title,
+                        points: totalTeamPoints,
+                        scoreType,
+                        targetType: 'team',
+                        stageId: resolvedStageId,
+                        actorId: user.uid,
+                        actorName: user.name,
+                        actorRole: user.role,
+                    });
 
-                    // Distribute points to each member's stats:
-                    // each member gets: individual_pts + round(group_pts / memberCount)
-                    const indivPts = Math.abs(getPoints());
-                    const grpPts = Math.abs(getTeamPoints());
+                    // Distribute points to each member's stats evenly
+                    // each member gets exactly: totalTeamPoints / memberCount
                     const memberCount = availableMembers.length;
-                    if (memberCount > 0 && (indivPts > 0 || grpPts > 0)) {
-                        const perMemberShare = indivPts + (memberCount > 0 ? Math.round(grpPts / memberCount) : 0);
+                    if (memberCount > 0 && totalTeamPoints > 0) {
+                        const perMemberShare = totalTeamPoints / memberCount;
                         const perMemberChange = scoreType === 'earn' ? perMemberShare : -perMemberShare;
-                        const stageId = teamDoc?.stageId || user.stageId || null;
+                        const roundedShare = Math.round(perMemberShare);
+                        const stageId = resolvedStageId;
+
                         const memberResults = await Promise.allSettled(
-                            availableMembers.map(member =>
-                                setDoc(doc(db, 'member_stats', member.key), {
+                            availableMembers.map(async (member) => {
+                                // 1. Save individual score record (audit log/recalculation source)
+                                await addDoc(collection(db, 'scores'), {
+                                    teamId: selectedTeam,
+                                    taskId: selectedTask,
+                                    points: perMemberShare,
+                                    type: scoreType,
+                                    targetType: 'member',
+                                    source: scoreSource,
+                                    registeredBy: user.uid,
+                                    registeredByName: user.name,
+                                    stageId,
+                                    memberKey: member.key,
+                                    memberUserId: member.userId,
+                                    memberName: member.name,
+                                    applyToTeamTotal: false, // Important: don't double count in team total
+                                    timestamp: serverTimestamp(),
+                                    syncedAt: serverTimestamp(),
+                                    pendingSync: false,
+                                });
+
+                                // 2. Update member_stats
+                                await setDoc(doc(db, 'member_stats', member.key), {
                                     memberKey: member.key,
                                     memberUserId: member.userId,
                                     memberName: member.name,
@@ -270,8 +308,8 @@ export default function ScoreRegistration({ onBack }: { onBack?: () => void }) {
                                     stageId,
                                     totalPoints: increment(perMemberChange),
                                     updatedAt: serverTimestamp(),
-                                }, { merge: true })
-                            )
+                                }, { merge: true });
+                            })
                         );
                         const failedCount = memberResults.filter(r => r.status === 'rejected').length;
                         memberResults.forEach((r, i) => {
@@ -280,7 +318,7 @@ export default function ScoreRegistration({ onBack }: { onBack?: () => void }) {
                         if (failedCount > 0) {
                             showToast(`✅ نقاط الفريق سُجِّلت — ⚠️ فشل توزيع النقاط على ${failedCount} فرد`, 'warning');
                         } else {
-                            showToast(`✅ تم تسجيل النقاط وتوزيعها على ${memberCount} أفراد (${perMemberShare} للفرد)`);
+                            showToast(`✅ تم تسجيل النقاط وتوزيعها على ${memberCount} أفراد (${roundedShare} للفرد)`);
                         }
                     } else if (memberCount === 0) {
                         showToast('✅ تم تسجيل نقاط الفريق — لا يوجد أعضاء مسجلون للتوزيع', 'warning');
@@ -305,7 +343,7 @@ export default function ScoreRegistration({ onBack }: { onBack?: () => void }) {
                             source: scoreSource,
                             registeredBy: user.uid,
                             registeredByName: user.name,
-                            stageId: teamDoc?.stageId || user.stageId || null,
+                            stageId: resolvedStageId,
                             memberKey: member.key,
                             memberUserId: member.userId,
                             memberName: member.name,
@@ -320,10 +358,27 @@ export default function ScoreRegistration({ onBack }: { onBack?: () => void }) {
                                 memberUserId: member.userId,
                                 memberName: member.name,
                                 teamId: selectedTeam,
-                                stageId: user.stageId || null,
+                                stageId: resolvedStageId,
                                 totalPoints: increment(pointChange),
                                 updatedAt: serverTimestamp(),
                             }, { merge: true });
+                            // Log to activities
+                            logActivity({
+                                kind: 'score',
+                                teamId: selectedTeam,
+                                teamName: teamDoc?.name,
+                                taskId: selectedTask,
+                                taskTitle: getSelectedTask()?.title,
+                                points: Math.abs(points),
+                                scoreType,
+                                targetType: 'member',
+                                memberKey: member.key,
+                                memberName: member.name,
+                                stageId: resolvedStageId,
+                                actorId: user.uid,
+                                actorName: user.name,
+                                actorRole: user.role,
+                            });
                         } else {
                             await addPendingScore(scoreData);
                         }

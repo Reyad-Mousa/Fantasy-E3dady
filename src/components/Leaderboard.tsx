@@ -27,6 +27,39 @@ interface MemberStat {
 
 type BoardType = 'teams' | 'members';
 
+const EMPTY_MEMBERS_BY_STAGE: Record<StageId, MemberStat[]> = {
+    grade7: [],
+    grade8: [],
+    grade9: [],
+};
+
+function asNonEmptyString(value: unknown): string | null {
+    if (typeof value !== 'string') return null;
+    const trimmed = value.trim();
+    return trimmed ? trimmed : null;
+}
+
+function asStageId(value: unknown): StageId | null {
+    return value === 'grade7' || value === 'grade8' || value === 'grade9'
+        ? value
+        : null;
+}
+
+function normalizeMemberName(value: string): string {
+    return value.toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+function parseLegacyMemberStatId(docId: string): { teamId: string; memberName: string } | null {
+    const match = /^m:(team_\d+)_(.+)$/.exec(docId);
+    if (!match) return null;
+    const memberName = match[2].replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
+    if (!memberName) return null;
+    return {
+        teamId: match[1],
+        memberName,
+    };
+}
+
 export default function Leaderboard({ onBack }: { onBack?: () => void }) {
     const [filter, setFilter] = useState<FilterValue>('all');
     const [boardType, setBoardType] = useState<BoardType>('teams');
@@ -36,6 +69,7 @@ export default function Leaderboard({ onBack }: { onBack?: () => void }) {
         grade8: [],
         grade9: [],
     });
+    const [teamsById, setTeamsById] = useState<Record<string, Team>>({});
     const [membersByStage, setMembersByStage] = useState<Record<StageId, MemberStat[]>>({
         grade7: [],
         grade8: [],
@@ -55,8 +89,10 @@ export default function Leaderboard({ onBack }: { onBack?: () => void }) {
                 grade8: [],
                 grade9: [],
             };
+            const newTeamsById: Record<string, Team> = {};
 
             allTeams.forEach(team => {
+                newTeamsById[team.id] = team;
                 const stageId = team.stageId as StageId;
                 if (newTeamsByStage[stageId]) {
                     newTeamsByStage[stageId].push(team);
@@ -68,6 +104,7 @@ export default function Leaderboard({ onBack }: { onBack?: () => void }) {
                 newTeamsByStage[stage.id as StageId].sort((a, b) => (b.totalPoints || 0) - (a.totalPoints || 0));
             });
 
+            setTeamsById(newTeamsById);
             setTeamsByStage(newTeamsByStage);
         });
 
@@ -75,44 +112,69 @@ export default function Leaderboard({ onBack }: { onBack?: () => void }) {
     }, []);
 
     useEffect(() => {
-        // Fetch all member_stats once and filter/sort in-memory
+        // Fetch all member_stats once and normalize in-memory (supports legacy malformed docs)
         const q = query(collection(db, 'member_stats'));
         const unsubscribe = onSnapshot(q, (snap) => {
-            const allMembers = snap.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() } as MemberStat));
-
-            const newMembersByStage: Record<StageId, MemberStat[]> = {
-                grade7: [],
-                grade8: [],
-                grade9: [],
+            const groupedByStage: Record<StageId, Map<string, MemberStat>> = {
+                grade7: new Map(),
+                grade8: new Map(),
+                grade9: new Map(),
             };
 
-            allMembers.forEach(member => {
-                const stageId = member.stageId as StageId;
-                if (newMembersByStage[stageId]) {
-                    newMembersByStage[stageId].push(member);
+            snap.docs.forEach((docSnap) => {
+                const raw = docSnap.data() as Partial<MemberStat> & { memberKey?: unknown };
+                const parsedLegacy = parseLegacyMemberStatId(docSnap.id);
+                const teamId = asNonEmptyString(raw.teamId) || parsedLegacy?.teamId || null;
+                const memberName = asNonEmptyString(raw.memberName) || parsedLegacy?.memberName || null;
+                const stageId =
+                    asStageId(raw.stageId) ||
+                    (teamId ? asStageId(teamsById[teamId]?.stageId) : null);
+                const totalPoints = Number(raw.totalPoints || 0);
+                const memberKey = asNonEmptyString(raw.memberKey);
+
+                if (!stageId || !teamId || !memberName || !Number.isFinite(totalPoints)) return;
+
+                const normalizedIdentity = memberKey || `legacy:${teamId}:${normalizeMemberName(memberName)}`;
+                const existing = groupedByStage[stageId].get(normalizedIdentity);
+
+                if (existing) {
+                    existing.totalPoints += totalPoints;
+                    return;
                 }
+
+                groupedByStage[stageId].set(normalizedIdentity, {
+                    id: normalizedIdentity,
+                    memberName,
+                    teamId,
+                    stageId,
+                    totalPoints,
+                });
             });
 
-            // Sort each stage in-memory
+            const newMembersByStage: Record<StageId, MemberStat[]> = {
+                grade7: Array.from(groupedByStage.grade7.values()),
+                grade8: Array.from(groupedByStage.grade8.values()),
+                grade9: Array.from(groupedByStage.grade9.values()),
+            };
+
             STAGES_LIST.forEach(stage => {
                 newMembersByStage[stage.id as StageId].sort((a, b) => (b.totalPoints || 0) - (a.totalPoints || 0));
             });
 
             setMembersByStage(newMembersByStage);
         }, () => {
-            setMembersByStage({ grade7: [], grade8: [], grade9: [] });
+            setMembersByStage(EMPTY_MEMBERS_BY_STAGE);
         });
 
         return () => unsubscribe();
-    }, []);
+    }, [teamsById]);
 
     useEffect(() => {
         setIsMounted(true);
     }, []);
 
-    const getTeamName = (teamId: string, stageId: StageId): string => {
-        const team = teamsByStage[stageId].find((t) => t.id === teamId);
-        return team?.name || 'فريق غير معروف';
+    const getTeamName = (teamId: string): string => {
+        return teamsById[teamId]?.name || 'فريق غير معروف';
     };
 
     const renderStageCard = (stageId: StageId) => {
@@ -121,7 +183,7 @@ export default function Leaderboard({ onBack }: { onBack?: () => void }) {
         const members = membersByStage[stageId] || [];
         const isTeams = boardType === 'teams';
         const list = isTeams ? teams : members;
-        const totalStagePoints = list.reduce((sum, item: any) => sum + (item.totalPoints || 0), 0);
+        const totalStagePoints = Math.round(list.reduce((sum, item: any) => sum + (item.totalPoints || 0), 0));
 
         const top5 = (isTeams ? teams : members).slice(0, 5).map((item: any, i) => ({
             name: isTeams ? item.name : item.memberName,
@@ -201,13 +263,13 @@ export default function Leaderboard({ onBack }: { onBack?: () => void }) {
                                             <p className="text-[10px] text-text-muted mt-0.5">👥 {item.memberCount} عضو</p>
                                         )
                                     ) : (
-                                        <p className="text-[10px] text-text-muted mt-0.5">🏷️ {getTeamName(item.teamId, stageId)}</p>
+                                        <p className="text-[10px] text-text-muted mt-0.5">🏷️ {getTeamName(item.teamId)}</p>
                                     )}
                                 </div>
 
                                 <div className="text-right flex flex-col items-end justify-center">
                                     <span className={`font-black ${isRank1 ? 'text-xl' : 'text-base text-text-primary'}`} style={isRank1 ? { color: stage.color } : {}}>
-                                        {item.totalPoints}
+                                        {Math.round(item.totalPoints)}
                                     </span>
                                     {totalStagePoints > 0 && (
                                         <span className="text-[10px] text-text-muted font-bold mt-0.5" dir="ltr">
@@ -286,7 +348,7 @@ export default function Leaderboard({ onBack }: { onBack?: () => void }) {
                                 <div className="flex items-center justify-center gap-4 text-white/80 text-sm">
                                     <span className="flex items-center gap-1">
                                         <Trophy className="w-4 h-4" />
-                                        {selectedTeam.totalPoints} نقطة
+                                        {Math.round(selectedTeam.totalPoints)} نقطة
                                     </span>
                                     <span className="flex items-center gap-1">
                                         <UserRound className="w-4 h-4" />
@@ -344,7 +406,7 @@ export default function Leaderboard({ onBack }: { onBack?: () => void }) {
                                                                     rank === 3 ? 'text-amber-700' :
                                                                         'text-text-secondary'
                                                                 }`}>
-                                                                {member.totalPoints}
+                                                                {Math.round(member.totalPoints)}
                                                             </span>
                                                             {selectedTeam.totalPoints > 0 && (
                                                                 <span className="text-[10px] text-text-muted/70 font-bold mt-0.5" dir="ltr">
