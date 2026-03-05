@@ -1,8 +1,8 @@
 import { useState, useEffect, useMemo } from 'react';
-import { collection, query, orderBy, onSnapshot, limit, where, type Query, type DocumentData } from 'firebase/firestore';
+import { collection, query, orderBy, onSnapshot, limit, where, type Query, type DocumentData, getDocs } from 'firebase/firestore';
 import { db } from '@/services/firebase';
-import { SectionHeader, EmptyState } from './ui/SharedUI';
-import { Activity, Trophy, AlertTriangle, Shield, Star, Clock, Users, Plus, Trash2, FileText } from 'lucide-react';
+import { SectionHeader, EmptyState, useToast } from './ui/SharedUI';
+import { Activity, Trophy, AlertTriangle, Shield, Star, Clock, Users, Plus, Trash2, FileText, RefreshCw } from 'lucide-react';
 import { motion } from 'motion/react';
 import StageBadge from './StageBadge';
 import StageFilterBar, { FilterValue } from './StageFilterBar';
@@ -28,7 +28,7 @@ interface ScoreData {
 interface AuditLogData {
     id: string;
     kind?: string;
-    operation?: 'create' | 'delete' | string;
+    operation?: 'create' | 'delete' | 'update' | string;
     entityType?: 'team' | 'task' | 'member' | string;
     entityId?: string;
     entityName?: string;
@@ -39,6 +39,15 @@ interface AuditLogData {
     actorRole?: string | null;
     details?: string | null;
     timestamp: any;
+}
+
+interface GlobalStats {
+    earnCount: number;
+    deductCount: number;
+    earnTotal: number;
+    deductTotal: number;
+    createCount: number;
+    deleteCount: number;
 }
 
 type ActivityEvent =
@@ -58,6 +67,7 @@ function toEventDate(value: any): Date {
 
 export default function RecentActivitiesPage({ onBack }: { onBack?: () => void }) {
     const { user } = useAuth();
+    const { showToast } = useToast();
     const [scores, setScores] = useState<ScoreData[]>([]);
     const [logs, setLogs] = useState<AuditLogData[]>([]);
     const [teams, setTeams] = useState<any[]>([]);
@@ -68,6 +78,8 @@ export default function RecentActivitiesPage({ onBack }: { onBack?: () => void }
     const [stageFilter, setStageFilter] = useState<FilterValue>(
         user?.role === 'super_admin' ? 'all' : (user?.stageId as FilterValue) || 'all'
     );
+    const [globalStats, setGlobalStats] = useState<GlobalStats | null>(null);
+    const [calculating, setCalculating] = useState(false);
 
     useEffect(() => {
         if (user?.role !== 'super_admin') {
@@ -171,7 +183,7 @@ export default function RecentActivitiesPage({ onBack }: { onBack?: () => void }
         const unsubLogs = onSnapshot(qLogs, snap => {
             const auditRows = snap.docs
                 .map(d => ({ id: d.id, ...d.data() } as AuditLogData))
-                .filter((row) => row.kind === 'audit' && (row.operation === 'create' || row.operation === 'delete'));
+                .filter((row) => row.kind === 'audit' && (row.operation === 'create' || row.operation === 'delete' || row.operation === 'update'));
             setLogs(auditRows);
             logsReady = true;
             markReady();
@@ -188,24 +200,145 @@ export default function RecentActivitiesPage({ onBack }: { onBack?: () => void }
         };
     }, [user, stageFilter]);
 
-    const activityEvents = useMemo<ActivityEvent[]>(() => {
-        const scoreEvents: ActivityEvent[] = scores.map((score) => ({
-            kind: 'score',
-            id: `score_${score.id}`,
-            timestamp: score.timestamp,
-            score,
-        }));
+    const handleCalculateGlobalStats = async () => {
+        if (!user) return;
+        setCalculating(true);
+        try {
+            let scoresQ: any = collection(db, 'scores');
+            let logsQ: any = collection(db, 'logs');
+            let teamsQ: any = collection(db, 'teams');
+            let usersQ: any = collection(db, 'users');
 
-        const auditEvents: ActivityEvent[] = logs.map((log) => ({
-            kind: 'audit',
-            id: `log_${log.id}`,
-            timestamp: log.timestamp,
-            log,
-        }));
+            if (user.role !== 'super_admin' || stageFilter !== 'all') {
+                const targetStage = user.role === 'super_admin' ? stageFilter : user.stageId;
+                scoresQ = query(scoresQ, where('stageId', '==', targetStage));
+                logsQ = query(logsQ, where('stageId', '==', targetStage));
+                teamsQ = query(teamsQ, where('stageId', '==', targetStage));
+                // For users, they might be linked by stageId directly
+                usersQ = query(usersQ, where('stageId', '==', targetStage));
+            }
+
+            const [scoresSnap, logsSnap, teamsSnap, usersSnap] = await Promise.all([
+                getDocs(scoresQ),
+                getDocs(logsQ),
+                getDocs(teamsQ),
+                getDocs(usersQ)
+            ]);
+
+            const existingTeamIds = new Set(teamsSnap.docs.map(d => d.id));
+            const existingUserIds = new Set(usersSnap.docs.map(d => d.id));
+
+            const stats: GlobalStats = {
+                earnCount: 0,
+                deductCount: 0,
+                earnTotal: 0,
+                deductTotal: 0,
+                createCount: 0,
+                deleteCount: 0
+            };
+
+            const teamMemberMap = new Map<string, Set<string>>();
+            teamsSnap.forEach(doc => {
+                const data = doc.data() as any;
+                teamMemberMap.set(doc.id, new Set(data.members || []));
+            });
+
+            scoresSnap.forEach(doc => {
+                const data = doc.data() as ScoreData;
+                // 1. Check if team exists
+                if (!existingTeamIds.has(data.teamId)) return;
+
+                // 2. Check if member exists (if it's a member score)
+                if (data.targetType === 'member' && data.memberKey) {
+                    const isUser = data.memberKey.startsWith('u:');
+                    if (isUser) {
+                        const userId = data.memberKey.substring(2);
+                        if (!existingUserIds.has(userId)) return;
+                    } else {
+                        // For list members, check if they are still in the team's member array
+                        const teamMembers = teamMemberMap.get(data.teamId);
+                        if (!teamMembers || !teamMembers.has(data.memberName || '')) return;
+                    }
+                }
+
+                if (data.type === 'earn') {
+                    stats.earnCount++;
+                    stats.earnTotal += Math.abs(data.points || 0);
+                } else {
+                    stats.deductCount++;
+                    stats.deductTotal += Math.abs(data.points || 0);
+                }
+            });
+
+            logsSnap.forEach(doc => {
+                const data = doc.data() as AuditLogData;
+                if (data.kind === 'audit') {
+                    if (data.operation === 'create') stats.createCount++;
+                    else if (data.operation === 'delete') stats.deleteCount++;
+                }
+            });
+
+            setGlobalStats(stats);
+            showToast('تم تحديث الإحصائيات الشاملة بنجاح ✅');
+        } catch (err) {
+            console.error('Error calculating global stats:', err);
+        } finally {
+            setCalculating(false);
+        }
+    };
+
+    const activityEvents = useMemo<ActivityEvent[]>(() => {
+        const existingTeamIds = new Set(teams.map(t => t.id));
+        const existingUserIds = new Set(users.map(u => u.id));
+
+        const teamMemberMap = new Map<string, Set<string>>();
+        teams.forEach(t => {
+            teamMemberMap.set(t.id, new Set(t.members || []));
+        });
+
+        const scoreEvents: ActivityEvent[] = scores
+            .filter(score => {
+                // 1. Must have active team
+                if (!existingTeamIds.has(score.teamId)) return false;
+
+                // 2. If member score, must have active member
+                if (score.targetType === 'member' && score.memberKey) {
+                    const isUser = score.memberKey.startsWith('u:');
+                    if (isUser) {
+                        const userId = score.memberKey.substring(2);
+                        if (!existingUserIds.has(userId)) return false;
+                    } else {
+                        // For list members, check if they are still in the team's member array
+                        const teamMembers = teamMemberMap.get(score.teamId);
+                        if (!teamMembers || !teamMembers.has(score.memberName || '')) return false;
+                    }
+                }
+                return true;
+            })
+            .map((score) => ({
+                kind: 'score',
+                id: `score_${score.id}`,
+                timestamp: score.timestamp,
+                score,
+            }));
+
+        const auditEvents: ActivityEvent[] = logs
+            .filter(log => {
+                const isDeleteOrStatus = log.operation === 'delete' || log.details === 'archived';
+                if (!isDeleteOrStatus && log.entityType === 'team' && !existingTeamIds.has(log.entityId || '')) return false;
+                if (!isDeleteOrStatus && log.entityType === 'member' && !existingUserIds.has(log.entityId || '')) return false;
+                return true;
+            })
+            .map((log) => ({
+                kind: 'audit',
+                id: `log_${log.id}`,
+                timestamp: log.timestamp,
+                log,
+            }));
 
         return [...scoreEvents, ...auditEvents]
             .sort((a, b) => toEventDate(b.timestamp).getTime() - toEventDate(a.timestamp).getTime());
-    }, [scores, logs]);
+    }, [scores, logs, teams, users]);
 
     const groupedEvents = useMemo(() => {
         const grouped: { label: string; items: ActivityEvent[] }[] = [];
@@ -235,6 +368,12 @@ export default function RecentActivitiesPage({ onBack }: { onBack?: () => void }
 
         return grouped;
     }, [activityEvents]);
+
+    const localScores = useMemo(() => activityEvents.filter(e => e.kind === 'score').map(e => (e as any).score as ScoreData), [activityEvents]);
+    const localLogs = useMemo(() => activityEvents.filter(e => e.kind === 'audit').map(e => (e as any).log as AuditLogData), [activityEvents]);
+
+    const createLogsCount = localLogs.filter((l) => l.operation === 'create').length;
+    const deleteLogsCount = localLogs.filter((l) => l.operation === 'delete').length;
 
     if (!user) {
         return (
@@ -272,9 +411,6 @@ export default function RecentActivitiesPage({ onBack }: { onBack?: () => void }
         );
     }
 
-    const createLogsCount = logs.filter((l) => l.operation === 'create').length;
-    const deleteLogsCount = logs.filter((l) => l.operation === 'delete').length;
-
     return (
         <div dir="rtl" className="space-y-6 pb-12">
             <SectionHeader
@@ -282,8 +418,19 @@ export default function RecentActivitiesPage({ onBack }: { onBack?: () => void }
                 subtitle="متابعة فورية لجميع تحركات وأرصدة الفرق"
                 onBack={onBack}
                 action={
-                    <div className="bg-gradient-to-br from-primary to-accent p-2.5 rounded-xl shadow-lg hidden sm:block">
-                        <Activity className="w-5 h-5 text-white" />
+                    <div className="flex items-center gap-3">
+                        <button
+                            onClick={handleCalculateGlobalStats}
+                            disabled={calculating}
+                            className="btn btn-ghost bg-surface/50 text-xs sm:text-sm border border-border/50"
+                            title="تحديث الإحصائيات لكامل التاريخ"
+                        >
+                            {calculating ? <div className="spinner !w-3.5 !h-3.5" /> : <RefreshCw className="w-4 h-4" />}
+                            <span className="hidden xs:inline">{globalStats ? 'تحديث الإحصائيات' : 'حساب إجمالي التاريخ'}</span>
+                        </button>
+                        <div className="bg-gradient-to-br from-primary to-accent p-2.5 rounded-xl shadow-lg hidden sm:block">
+                            <Activity className="w-5 h-5 text-white" />
+                        </div>
                     </div>
                 }
             />
@@ -294,31 +441,31 @@ export default function RecentActivitiesPage({ onBack }: { onBack?: () => void }
 
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
                 <div className="glass-card p-4 text-center">
-                    <div className="text-2xl font-black text-success">{scores.filter(s => s.type === 'earn').length}</div>
+                    <div className="text-2xl font-black text-success">{globalStats ? globalStats.earnCount : localScores.filter(s => s.type === 'earn').length}</div>
                     <div className="text-[10px] text-text-muted font-bold mt-1">عمليات إضافة</div>
                 </div>
                 <div className="glass-card p-4 text-center">
-                    <div className="text-2xl font-black text-danger">{scores.filter(s => s.type === 'deduct').length}</div>
+                    <div className="text-2xl font-black text-danger">{globalStats ? globalStats.deductCount : localScores.filter(s => s.type === 'deduct').length}</div>
                     <div className="text-[10px] text-text-muted font-bold mt-1">عمليات خصم</div>
                 </div>
                 <div className="glass-card p-4 text-center">
                     <div className="text-2xl font-black text-primary-light">
-                        +{scores.filter(s => s.type === 'earn').reduce((sum, s) => sum + s.points, 0)}
+                        +{globalStats ? globalStats.earnTotal : localScores.filter(s => s.type === 'earn').reduce((sum, s) => sum + s.points, 0)}
                     </div>
                     <div className="text-[10px] text-text-muted font-bold mt-1">إجمالي الإضافة</div>
                 </div>
                 <div className="glass-card p-4 text-center">
                     <div className="text-2xl font-black text-accent">
-                        -{scores.filter(s => s.type === 'deduct').reduce((sum, s) => sum + s.points, 0)}
+                        -{globalStats ? globalStats.deductTotal : localScores.filter(s => s.type === 'deduct').reduce((sum, s) => sum + s.points, 0)}
                     </div>
                     <div className="text-[10px] text-text-muted font-bold mt-1">إجمالي الخصم</div>
                 </div>
                 <div className="glass-card p-4 text-center">
-                    <div className="text-2xl font-black text-success">{createLogsCount}</div>
+                    <div className="text-2xl font-black text-success">{globalStats ? globalStats.createCount : createLogsCount}</div>
                     <div className="text-[10px] text-text-muted font-bold mt-1">عمليات إنشاء</div>
                 </div>
                 <div className="glass-card p-4 text-center">
-                    <div className="text-2xl font-black text-danger">{deleteLogsCount}</div>
+                    <div className="text-2xl font-black text-danger">{globalStats ? globalStats.deleteCount : deleteLogsCount}</div>
                     <div className="text-[10px] text-text-muted font-bold mt-1">عمليات حذف</div>
                 </div>
             </div>
@@ -418,6 +565,7 @@ export default function RecentActivitiesPage({ onBack }: { onBack?: () => void }
 
                                 const log = event.log;
                                 const isCreate = log.operation === 'create';
+                                const isUpdate = log.operation === 'update';
                                 const stageId = log.stageId;
                                 const entityTypeLabel: Record<string, string> = {
                                     team: 'فريق',
@@ -443,27 +591,29 @@ export default function RecentActivitiesPage({ onBack }: { onBack?: () => void }
                                         <div className="flex items-start gap-3 sm:gap-4">
                                             <div className={`w-10 h-10 sm:w-12 sm:h-12 rounded-2xl flex items-center justify-center shrink-0 border shadow-lg ${isCreate
                                                 ? 'bg-success/10 border-success/30 text-success shadow-success/10'
-                                                : 'bg-danger/10 border-danger/30 text-danger shadow-danger/10'
+                                                : isUpdate
+                                                    ? 'bg-accent/10 border-accent/30 text-accent shadow-accent/10'
+                                                    : 'bg-danger/10 border-danger/30 text-danger shadow-danger/10'
                                                 }`}>
-                                                {isCreate ? <Plus className="w-5 h-5 sm:w-6 sm:h-6" /> : <Trash2 className="w-5 h-5 sm:w-6 sm:h-6" />}
+                                                {isCreate ? <Plus className="w-5 h-5 sm:w-6 sm:h-6" /> : isUpdate ? <FileText className="w-5 h-5 sm:w-6 sm:h-6" /> : <Trash2 className="w-5 h-5 sm:w-6 sm:h-6" />}
                                             </div>
 
                                             <div className="flex-1 min-w-0">
                                                 <div className="flex items-start justify-between gap-2">
                                                     <div className="space-y-1.5">
                                                         <h4 className="font-bold text-white text-sm sm:text-base leading-tight">
-                                                            {isCreate ? 'تم إنشاء' : 'تم حذف'} {entityLabel}
+                                                            {isCreate ? 'تم إضافة' : (isUpdate && log.details === 'archived') ? 'تم أرشفة' : isUpdate ? 'تم تعديل' : 'تم حذف'} {entityLabel} &quot;<span className={isCreate ? 'text-success' : (isUpdate && log.details === 'archived') ? 'text-danger' : isUpdate ? 'text-accent' : 'text-danger'}>{log.entityName || 'غير معروف'}</span>&quot;
                                                         </h4>
                                                         <div className="flex flex-wrap items-center gap-1.5">
-                                                            <span className="inline-flex items-center gap-1 text-[10px] text-text-muted bg-white/5 px-2 py-0.5 rounded-md border border-white/5">
-                                                                <FileText className="w-3 h-3" />
-                                                                {log.entityName || 'غير معروف'}
-                                                            </span>
                                                             <span className={`inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-md border ${isCreate
                                                                 ? 'text-success bg-success/10 border-success/20'
-                                                                : 'text-danger bg-danger/10 border-danger/20'
+                                                                : (isUpdate && log.details === 'archived')
+                                                                    ? 'text-danger bg-danger/10 border-danger/20'
+                                                                    : isUpdate
+                                                                        ? 'text-accent bg-accent/10 border-accent/20'
+                                                                        : 'text-danger bg-danger/10 border-danger/20'
                                                                 }`}>
-                                                                {isCreate ? 'إنشاء' : 'حذف'}
+                                                                {isCreate ? 'إضافة' : (isUpdate && log.details === 'archived') ? 'أرشفة' : isUpdate ? 'تعديل' : 'حذف'}
                                                             </span>
                                                             {stageId && <StageBadge stageId={stageId} size="sm" />}
                                                         </div>

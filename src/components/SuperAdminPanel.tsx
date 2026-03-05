@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { collection, onSnapshot, doc, setDoc, updateDoc, deleteDoc, serverTimestamp, query, orderBy, getDocs, where } from 'firebase/firestore';
+import { collection, onSnapshot, doc, setDoc, updateDoc, deleteDoc, serverTimestamp, query, orderBy, getDocs, where, writeBatch } from 'firebase/firestore';
 import { db } from '@/services/firebase';
 import { useAuth, canManageUsers, canExportReports } from '@/context/AuthContext';
 import { useToast, SectionHeader, StatsCard, EmptyState, ConfirmModal } from './ui/SharedUI';
@@ -7,7 +7,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import {
     Settings, Users, ListTodo, Trophy, BarChart3, FileSpreadsheet,
     Plus, Upload, Download, Trash2, Edit3, X, Shield, UserPlus,
-    PieChart, Activity, AlertTriangle
+    PieChart, Activity, AlertTriangle, RefreshCw
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import StageFilterBar, { FilterValue } from './StageFilterBar';
@@ -61,6 +61,7 @@ export default function SuperAdminPanel({ onBack }: { onBack?: () => void }) {
     const [scores, setScores] = useState<ScoreData[]>([]);
     const [tasks, setTasks] = useState<TaskData[]>([]);
     const [loading, setLoading] = useState(true);
+    const [recalculating, setRecalculating] = useState(false);
 
     // Team form
     const [showTeamModal, setShowTeamModal] = useState(false);
@@ -69,6 +70,9 @@ export default function SuperAdminPanel({ onBack }: { onBack?: () => void }) {
     const [teamStageId, setTeamStageId] = useState<string>('');
     const [editingTeam, setEditingTeam] = useState<TeamData | null>(null);
     const [deleteTeamConfirm, setDeleteTeamConfirm] = useState<TeamData | null>(null);
+    const [showRecalculateConfirm, setShowRecalculateConfirm] = useState(false);
+    const [showClearLogsConfirm, setShowClearLogsConfirm] = useState(false);
+    const [clearingLogs, setClearingLogs] = useState(false);
 
     const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -142,6 +146,107 @@ export default function SuperAdminPanel({ onBack }: { onBack?: () => void }) {
         setTeamName('');
         setTeamLeader('');
         setTeamStageId('');
+    };
+
+    const handleRecalculateTotals = async () => {
+        setRecalculating(true);
+        try {
+            console.log('Starting points recalculation...');
+            // 1. Fetch current scores
+            const scoresSnap = await getDocs(collection(db, 'scores'));
+            const allScores = scoresSnap.docs.map(d => ({ id: d.id, ...d.data() } as any));
+            console.log(`Fetched ${allScores.length} scores.`);
+
+            // 2. Fetch current teams and member_stats to reset
+            const teamsSnap = await getDocs(collection(db, 'teams'));
+            const memberStatsSnap = await getDocs(collection(db, 'member_stats'));
+
+            const teamTotals: Record<string, number> = {};
+            const memberTotals: Record<string, number> = {};
+            const memberStatsMetadata: Record<string, any> = {};
+
+            // Initialize totals to 0 and preserve metadata
+            teamsSnap.forEach(d => teamTotals[d.id] = 0);
+            memberStatsSnap.forEach(d => {
+                memberTotals[d.id] = 0;
+                memberStatsMetadata[d.id] = d.data();
+            });
+
+            // 3. Rebuild totals from scores
+            for (const score of allScores) {
+                const pts = score.type === 'earn' ? Math.abs(score.points) : -Math.abs(score.points);
+
+                if (score.applyToTeamTotal && score.teamId) {
+                    teamTotals[score.teamId] = (teamTotals[score.teamId] || 0) + pts;
+                }
+
+                if (score.targetType === 'member' && score.memberKey) {
+                    memberTotals[score.memberKey] = (memberTotals[score.memberKey] || 0) + pts;
+                }
+            }
+
+            // 4. Batch update Firestore in chunks of 400
+            const updates = [
+                ...Object.entries(teamTotals).map(([id, total]) => ({ type: 'team', id, data: { totalPoints: total } })),
+                ...Object.entries(memberTotals).map(([id, total]) => ({ type: 'member', id, data: { totalPoints: total } }))
+            ];
+
+            console.log(`Applying ${updates.length} updates across teams and members.`);
+
+            const CHUNK_SIZE = 400;
+            for (let i = 0; i < updates.length; i += CHUNK_SIZE) {
+                const chunk = updates.slice(i, i + CHUNK_SIZE);
+                const batch = writeBatch(db);
+
+                for (const update of chunk) {
+                    const docRef = doc(db, update.type === 'team' ? 'teams' : 'member_stats', update.id);
+                    batch.set(docRef, update.data, { merge: true });
+                }
+
+                await batch.commit();
+                console.log(`Committed batch ${Math.floor(i / CHUNK_SIZE) + 1}`);
+            }
+
+            showToast('تم إعادة حساب جميع النقاط بنجاح ✅');
+            setShowRecalculateConfirm(false);
+        } catch (err: any) {
+            console.error('Recalculate error detailed:', err);
+            const errorCode = err.code ? ` (${err.code})` : '';
+            showToast(`فشل في إعادة حساب النقاط: ${err.message || 'خطأ غير معروف'}${errorCode}`, 'error');
+        } finally {
+            setRecalculating(false);
+        }
+    };
+
+    const handleClearLogs = async () => {
+        setClearingLogs(true);
+        try {
+            // 1. Fetch current scores and logs
+            const scoresSnap = await getDocs(collection(db, 'scores'));
+            const logsSnap = await getDocs(collection(db, 'logs'));
+
+            const allRefs = [
+                ...scoresSnap.docs.map(d => d.ref),
+                ...logsSnap.docs.map(d => d.ref)
+            ];
+
+            const CHUNK_SIZE = 400;
+            for (let i = 0; i < allRefs.length; i += CHUNK_SIZE) {
+                const chunk = allRefs.slice(i, i + CHUNK_SIZE);
+                const batch = writeBatch(db);
+                chunk.forEach(ref => batch.delete(ref));
+                await batch.commit();
+                console.log(`Deleted batch ${Math.floor(i / CHUNK_SIZE) + 1}`);
+            }
+
+            showToast('تم مسح سجل النشاطات والعمليات بنجاح 🗑️');
+            setShowClearLogsConfirm(false);
+        } catch (err: any) {
+            console.error('Clear logs error:', err);
+            showToast('فشل في مسح السجل', 'error');
+        } finally {
+            setClearingLogs(false);
+        }
     };
 
     // =========================
@@ -366,7 +471,7 @@ export default function SuperAdminPanel({ onBack }: { onBack?: () => void }) {
                                     <div className="flex items-start justify-between mb-3">
                                         <div className="flex items-center gap-3">
                                             <div className="w-12 h-12 rounded-2xl gradient-primary flex items-center justify-center text-white font-black text-xl">
-                                                {team.name.charAt(0)}
+                                                {(team.name || '؟').charAt(0)}
                                             </div>
                                             <div>
                                                 <h3 className="font-bold text-text-primary">{team.name}</h3>
@@ -489,6 +594,42 @@ export default function SuperAdminPanel({ onBack }: { onBack?: () => void }) {
                         </button>
                     </div>
 
+                    <div className="glass-card p-6 border border-warning/30 bg-warning/5">
+                        <h3 className="font-bold text-text-primary mb-4 flex items-center gap-2">
+                            <RefreshCw className="w-5 h-5 text-warning" />
+                            إعادة حساب الإجماليات
+                        </h3>
+                        <p className="text-text-secondary text-sm mb-4">
+                            استخدم هذه الميزة إذا لاحظت عدم دقة في مجموع النقاط للفرق أو الأعضاء. سيتم مسح الإجماليات الحالية وإعادة بنائها من سجلات النقاط فقط.
+                        </p>
+                        <button
+                            onClick={() => setShowRecalculateConfirm(true)}
+                            disabled={recalculating}
+                            className="btn btn-ghost text-warning border-warning/30 hover:bg-warning/10"
+                        >
+                            {recalculating ? <div className="spinner !w-4 !h-4" /> : <RefreshCw className="w-4 h-4" />}
+                            إعادة حساب النقاط
+                        </button>
+                    </div>
+
+                    <div className="glass-card p-6 border border-danger/30 bg-danger/5">
+                        <h3 className="font-bold text-text-primary mb-4 flex items-center gap-2">
+                            <Trash2 className="w-5 h-5 text-danger" />
+                            مسح سجل النشاطات والعمليات
+                        </h3>
+                        <p className="text-text-secondary text-sm mb-4">
+                            تحذير: سيتم حذف جميع سجلات "النشاطات" و "النقاط المسجلة" نهائياً. المسح سيجعل صفحة النشاطات فارغة، ولكن حذف سجلات النقاط سيمنعك من استخدام ميزة "إعادة حساب النقاط" لاحقاً (لأن السجلات الأصلية ستُحذف).
+                        </p>
+                        <button
+                            onClick={() => setShowClearLogsConfirm(true)}
+                            disabled={clearingLogs}
+                            className="btn btn-ghost text-danger border-danger/30 hover:bg-danger/10"
+                        >
+                            {clearingLogs ? <div className="spinner !w-4 !h-4" /> : <Trash2 className="w-4 h-4" />}
+                            مسح السجل بالكامل
+                        </button>
+                    </div>
+
                     {/* Summary Stats */}
                     <div className="grid sm:grid-cols-3 gap-4">
                         <div className="glass-card p-5 text-center">
@@ -595,6 +736,28 @@ export default function SuperAdminPanel({ onBack }: { onBack?: () => void }) {
                 onConfirm={handleDeleteTeam}
                 onCancel={() => setDeleteTeamConfirm(null)}
                 confirmText="حذف"
+                variant="danger"
+            />
+
+            {/* Recalculate Confirm */}
+            <ConfirmModal
+                isOpen={showRecalculateConfirm}
+                title="إعادة حساب النقاط"
+                message="سيتم تصفير جميع إجماليات النقاط للفرق والأعضاء وإعادة حسابها من سجلات النقاط. هل أنت متأكد؟"
+                onConfirm={handleRecalculateTotals}
+                onCancel={() => setShowRecalculateConfirm(false)}
+                confirmText={recalculating ? 'جاري الحساب...' : 'بدء الحساب'}
+                variant="primary"
+            />
+
+            {/* Clear Logs Confirm */}
+            <ConfirmModal
+                isOpen={showClearLogsConfirm}
+                title="مسح سجل النشاطات والعمليات"
+                message="سيتم حذف جميع سجلات النشاطات والنقاط المسجلة نهائياً من قاعدة البيانات. لن تتمكن من التراجع أو إعادة حساب النقاط لاحقاً. هل أنت متأكد؟"
+                onConfirm={handleClearLogs}
+                onCancel={() => setShowClearLogsConfirm(false)}
+                confirmText={clearingLogs ? 'جاري المسح...' : 'حذف السجل'}
                 variant="danger"
             />
         </div>
