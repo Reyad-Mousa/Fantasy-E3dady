@@ -17,6 +17,7 @@ interface HomeProps {
 export default function Home({ onNavigate }: HomeProps) {
   const { user } = useAuth();
 
+  const [isMounted, setIsMounted] = useState(false);
   const [stats, setStats] = useState({
     rank: '--',
     points: '--',
@@ -111,6 +112,10 @@ export default function Home({ onNavigate }: HomeProps) {
       unsubUserTasks();
     };
   }, [user]);
+
+  useEffect(() => {
+    setIsMounted(true);
+  }, []);
 
   useEffect(() => {
     if (!selectedTeam || !selectedTeam.members || selectedTeam.members.length === 0) {
@@ -224,46 +229,48 @@ export default function Home({ onNavigate }: HomeProps) {
           {isMobile ? (
             <div className="rounded-2xl border border-white/5 bg-white/[0.03] p-3">
               <div className="h-[240px] w-full" dir="ltr">
-                <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
-                  <BarChart
-                    data={mobileChartData}
-                    margin={{ top: 8, bottom: 2 }}
-                  >
-                    <XAxis
-                      dataKey="shortName"
-                      axisLine={false}
-                      tickLine={false}
-                      tick={{ fill: '#94a3b8', fontSize: 11, fontWeight: 'bold' }}
-                      dy={8}
-                    />
-                    <YAxis hide />
-                    <Tooltip
-                      cursor={{ fill: 'rgba(255,255,255,0.03)' }}
-                      formatter={(value: any, _name, payload: any) => [
-                        `${Number(value) || 0} نقطة`,
-                        `${payload?.payload?.name ?? 'المرحلة'}`,
-                      ]}
-                      contentStyle={{
-                        backgroundColor: '#1e1b4b',
-                        borderRadius: '12px',
-                        border: '1px solid rgba(255,255,255,0.1)',
-                        boxShadow: '0 10px 30px rgba(0,0,0,0.35)',
-                        fontSize: '12px',
-                      }}
-                      itemStyle={{ color: '#fff', fontWeight: 'bold' }}
-                    />
-                    <Bar
-                      dataKey="points"
-                      radius={[10, 10, 0, 0]}
-                      barSize={32}
-                      isAnimationActive={!prefersLowMotion}
+                {isMounted && (
+                  <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
+                    <BarChart
+                      data={mobileChartData}
+                      margin={{ top: 8, bottom: 2 }}
                     >
-                      {mobileChartData.map((entry, index) => (
-                        <Cell key={`mobile-cell-${index}`} fill={entry.color} />
-                      ))}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
+                      <XAxis
+                        dataKey="shortName"
+                        axisLine={false}
+                        tickLine={false}
+                        tick={{ fill: '#94a3b8', fontSize: 11, fontWeight: 'bold' }}
+                        dy={8}
+                      />
+                      <YAxis hide />
+                      <Tooltip
+                        cursor={{ fill: 'rgba(255,255,255,0.03)' }}
+                        formatter={(value: any, _name, payload: any) => [
+                          `${Number(value) || 0} نقطة`,
+                          `${payload?.payload?.name ?? 'المرحلة'}`,
+                        ]}
+                        contentStyle={{
+                          backgroundColor: '#1e1b4b',
+                          borderRadius: '12px',
+                          border: '1px solid rgba(255,255,255,0.1)',
+                          boxShadow: '0 10px 30px rgba(0,0,0,0.35)',
+                          fontSize: '12px',
+                        }}
+                        itemStyle={{ color: '#fff', fontWeight: 'bold' }}
+                      />
+                      <Bar
+                        dataKey="points"
+                        radius={[10, 10, 0, 0]}
+                        barSize={32}
+                        isAnimationActive={!prefersLowMotion}
+                      >
+                        {mobileChartData.map((entry, index) => (
+                          <Cell key={`mobile-cell-${index}`} fill={entry.color} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                )}
               </div>
               <div className="mt-3 grid grid-cols-3 gap-2 border-t border-white/5 pt-3" dir="ltr">
                 {mobileChartData.map((stage, i) => (
@@ -278,33 +285,35 @@ export default function Home({ onNavigate }: HomeProps) {
           ) : (
             <>
               <div className="h-[280px] sm:h-[350px] w-full" dir="ltr">
-                <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0} debounce={1}>
-                  <BarChart data={stageStats} margin={{ top: 10, right: 0, left: -20, bottom: 0 }}>
-                    <XAxis
-                      dataKey="name"
-                      axisLine={false}
-                      tickLine={false}
-                      tick={{ fill: '#94a3b8', fontSize: 12, fontWeight: 'bold' }}
-                      dy={10}
-                    />
-                    <YAxis hide />
-                    <Tooltip
-                      cursor={{ fill: 'rgba(255,255,255,0.03)' }}
-                      contentStyle={{ backgroundColor: '#1e1b4b', borderRadius: '16px', border: '1px solid rgba(255,255,255,0.1)', boxShadow: '0 10px 30px rgba(0,0,0,0.4)' }}
-                      itemStyle={{ color: '#fff', fontWeight: 'bold' }}
-                    />
-                    <Bar
-                      dataKey="points"
-                      radius={[12, 12, 0, 0]}
-                      barSize={isMobile ? 28 : 60}
-                      isAnimationActive={!prefersLowMotion}
-                    >
-                      {stageStats.map((entry, index) => (
-                        <Cell key={`cell-${index}`} fill={entry.color} />
-                      ))}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
+                {isMounted && (
+                  <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0} debounce={1}>
+                    <BarChart data={stageStats} margin={{ top: 10, right: 0, left: -20, bottom: 0 }}>
+                      <XAxis
+                        dataKey="name"
+                        axisLine={false}
+                        tickLine={false}
+                        tick={{ fill: '#94a3b8', fontSize: 12, fontWeight: 'bold' }}
+                        dy={10}
+                      />
+                      <YAxis hide />
+                      <Tooltip
+                        cursor={{ fill: 'rgba(255,255,255,0.03)' }}
+                        contentStyle={{ backgroundColor: '#1e1b4b', borderRadius: '16px', border: '1px solid rgba(255,255,255,0.1)', boxShadow: '0 10px 30px rgba(0,0,0,0.4)' }}
+                        itemStyle={{ color: '#fff', fontWeight: 'bold' }}
+                      />
+                      <Bar
+                        dataKey="points"
+                        radius={[12, 12, 0, 0]}
+                        barSize={isMobile ? 28 : 60}
+                        isAnimationActive={!prefersLowMotion}
+                      >
+                        {stageStats.map((entry, index) => (
+                          <Cell key={`cell-${index}`} fill={entry.color} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                )}
               </div>
 
               {/* Stage Legend for Desktop */}
