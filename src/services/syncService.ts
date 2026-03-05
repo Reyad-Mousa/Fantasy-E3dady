@@ -2,6 +2,7 @@ import { collection, addDoc, doc, getDoc, getDocs, increment, serverTimestamp, s
 import { db } from './firebase';
 import { getUnsyncedScores, markScoreSynced, type PendingScore } from './offlineDb';
 import { logActivity } from './activityLogger';
+import { buildMemberKey, normalizeMemberName } from './memberKeys';
 
 export async function syncPendingScores(): Promise<number> {
     const pending = await getUnsyncedScores();
@@ -60,20 +61,25 @@ export async function syncPendingScores(): Promise<number> {
 
                     for (const u of userMembers) {
                         const name = String(u.name || u.displayName || '').trim();
-                        if (!name || seen.has(name)) continue;
-                        seen.add(name);
-                        availableMembers.push({ key: `u:${u.id}`, userId: u.id, name });
+                        if (!name) continue;
+                        const normalizedName = normalizeMemberName(name);
+                        if (seen.has(normalizedName)) continue;
+                        seen.add(normalizedName);
+                        const key = buildMemberKey({ memberUserId: u.id, teamId: score.teamId, memberName: name });
+                        if (!key) continue;
+                        availableMembers.push({ key, userId: u.id, name });
                     }
 
                     if (teamData?.members && Array.isArray(teamData.members)) {
                         for (const rawName of teamData.members) {
                             const name = String(rawName || '').trim();
                             if (!name) continue;
-                            const norm = name.toLowerCase().replace(/\s+/g, ' ');
+                            const norm = normalizeMemberName(name);
                             if (seen.has(norm)) continue;
                             seen.add(norm);
-                            // Using the same format as ScoreRegistration uses for team list sources
-                            availableMembers.push({ key: `n:${score.teamId}:${norm}`, userId: null, name });
+                            const key = buildMemberKey({ teamId: score.teamId, memberName: name });
+                            if (!key) continue;
+                            availableMembers.push({ key, userId: null, name });
                         }
                     }
 

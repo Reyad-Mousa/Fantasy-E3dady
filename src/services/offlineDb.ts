@@ -27,6 +27,8 @@ export interface CachedTeam {
     leaderId: string;
     totalPoints: number;
     memberCount: number;
+    members?: string[];
+    stageId?: string | null;
     updatedAt: number;
 }
 
@@ -39,6 +41,7 @@ export interface CachedTask {
     status: 'active' | 'archived';
     stageId?: string;
     createdBy: string;
+    isSuperAdminOnly?: boolean;
 }
 
 export interface CachedUser {
@@ -47,6 +50,7 @@ export interface CachedUser {
     email: string;
     role: string;
     teamId: string | null;
+    stageId?: string | null;
 }
 
 class CompetitionDB extends Dexie {
@@ -93,6 +97,12 @@ class CompetitionDB extends Dexie {
             cachedTasks: 'taskId, title, points, type, status, stageId',
             cachedUsers: 'userId, name, email, role, teamId',
         });
+        this.version(7).stores({
+            pendingScores: '++id, teamId, taskId, points, type, targetType, source, registeredBy, registeredByName, stageId, memberKey, memberUserId, memberName, customNote, distributeToMembers, applyToTeamTotal, timestamp, synced',
+            cachedTeams: 'teamId, name, leaderId, totalPoints, memberCount, stageId, updatedAt',
+            cachedTasks: 'taskId, title, points, type, status, stageId, isSuperAdminOnly',
+            cachedUsers: 'userId, name, email, role, teamId, stageId',
+        });
     }
 }
 
@@ -133,6 +143,17 @@ export async function cacheTasks(tasks: CachedTask[]) {
 // Get cached tasks
 export async function getCachedTasks(): Promise<CachedTask[]> {
     return localDb.cachedTasks.toArray();
+}
+
+// Cache users locally
+export async function cacheUsers(users: CachedUser[]) {
+    await localDb.cachedUsers.clear();
+    await localDb.cachedUsers.bulkAdd(users);
+}
+
+// Get cached users
+export async function getCachedUsers(): Promise<CachedUser[]> {
+    return localDb.cachedUsers.toArray();
 }
 
 // Get pending sync count

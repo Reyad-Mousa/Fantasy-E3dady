@@ -5,10 +5,25 @@ import {
 } from 'firebase/firestore';
 import { db } from '@/services/firebase';
 import { useAuth, canCreateTasks, canRegisterScores } from '@/context/AuthContext';
-import { addPendingScore, cacheTasks, getCachedTasks } from '@/services/offlineDb';
+import {
+    addPendingScore,
+    cacheTasks,
+    cacheTeams,
+    cacheUsers,
+    getCachedTasks,
+    getCachedTeams,
+    getCachedUsers,
+} from '@/services/offlineDb';
 import { logActivity } from '@/services/activityLogger';
+import {
+    isMassTaskTitle,
+    saveAttendedKeys,
+} from '@/services/attendanceCache';
+import { resolveTodayAttendance } from '@/services/attendanceResolver';
+import { buildMemberKey, normalizeMemberName } from '@/services/memberKeys';
 import { useOnlineStatus, useToast, EmptyState, SectionHeader } from './ui/SharedUI';
 import StageBadge from './StageBadge';
+import StageFilterBar, { type FilterValue } from './StageFilterBar';
 import { motion, AnimatePresence } from 'motion/react';
 import {
     ListTodo, Plus, Clock, CheckCircle2, XCircle, Trophy, Target,
@@ -54,32 +69,6 @@ interface AttendanceMember {
     stageId: string | null;
 }
 
-// Helper to detect mass-attendance tasks
-const isMassTask = (title: string) =>
-    title.includes('قداس') || title.includes('قداسس');
-
-// ── localStorage helpers for attendance persistence ────────────────────────
-//  Key format:  attendance_<taskId>_<YYYY-MM-DD>
-//  Auto-expires: a new day produces a different key, so old data is ignored.
-const todayStr = () => new Date().toISOString().slice(0, 10);
-const attendanceCacheKey = (taskId: string) =>
-    `attendance_${taskId}_${todayStr()}`;
-
-const loadAttendedKeys = (taskId: string): Set<string> => {
-    try {
-        const raw = localStorage.getItem(attendanceCacheKey(taskId));
-        if (!raw) return new Set();
-        return new Set(JSON.parse(raw) as string[]);
-    } catch { return new Set(); }
-};
-
-const saveAttendedKeys = (taskId: string, keys: Set<string>) => {
-    try {
-        localStorage.setItem(attendanceCacheKey(taskId), JSON.stringify([...keys]));
-    } catch { /* storage full — ignore */ }
-};
-// ──────────────────────────────────────────────────────────────────────────
-
 function isPermissionDeniedError(error: unknown): boolean {
     return Boolean(
         error &&
@@ -109,29 +98,68 @@ export default function TasksPage({ onBack, initialTaskId }: { onBack?: () => vo
     const [teams, setTeams] = useState<Team[]>([]);
     const [memberUsers, setMemberUsers] = useState<MemberUser[]>([]);
     const [addingKey, setAddingKey] = useState<string | null>(null);
-    const [addedKeys, setAddedKeys] = useState<Set<string>>(new Set());
+    const [resolvedAddedKeys, setResolvedAddedKeys] = useState<Set<string>>(new Set());
+    const [attendanceStageFilter, setAttendanceStageFilter] = useState<FilterValue>(
+        user?.role === 'super_admin' ? 'all' : (user?.stageId as FilterValue) || 'all'
+    );
 
     // Auto-open modal if initialTaskId is provided
     useEffect(() => {
         if (initialTaskId && tasks.length > 0) {
             const task = tasks.find(t => t.id === initialTaskId && t.status === 'active');
-            if (task && isMassTask(task.title)) {
+            if (task && isMassTaskTitle(task.title)) {
                 setAttendanceTask(task);
             }
         }
     }, [initialTaskId, tasks]);
 
-    // When a mass task modal opens, restore today's attendance from localStorage
     useEffect(() => {
-        if (attendanceTask) {
-            setAddedKeys(loadAttendedKeys(attendanceTask.id));
+        if (user?.role === 'super_admin') {
+            setAttendanceStageFilter('all');
+            return;
         }
-    }, [attendanceTask?.id]);
+        setAttendanceStageFilter((user?.stageId as FilterValue) || 'all');
+    }, [user?.role, user?.stageId]);
 
     // Fetch teams + members for attendance modal
     useEffect(() => {
         if (!user) return;
         const stageScopedRole = user.role === 'admin' || user.role === 'leader';
+        if (!online) {
+            Promise.all([getCachedTeams(), getCachedUsers()])
+                .then(([cachedTeams, cachedUsers]) => {
+                    const offlineTeams = cachedTeams
+                        .map(team => ({
+                            id: team.teamId,
+                            name: team.name,
+                            stageId: team.stageId || null,
+                            members: team.members || [],
+                            totalPoints: team.totalPoints || 0,
+                        } as Team))
+                        .filter(team => !stageScopedRole || !user.stageId || team.stageId === user.stageId);
+
+                    const offlineMembers = cachedUsers
+                        .map(member => ({
+                            id: member.userId,
+                            name: member.name,
+                            role: member.role,
+                            teamId: member.teamId,
+                            stageId: member.stageId || null,
+                        } as MemberUser))
+                        .filter(member => member.role === 'member');
+
+                    setTeams(offlineTeams);
+                    setMemberUsers(offlineMembers);
+                })
+                .catch(err => {
+                    console.error('Offline attendance cache:', err);
+                    setTeams([]);
+                    setMemberUsers([]);
+                });
+
+            return;
+        }
+
         const stageFilter = stageScopedRole && user.stageId
             ? where('stageId', '==', user.stageId) : null;
 
@@ -141,31 +169,56 @@ export default function TasksPage({ onBack, initialTaskId }: { onBack?: () => vo
 
         const u1 = onSnapshot(
             teamsQ,
-            snap => setTeams(snap.docs.map(d => ({ id: d.id, ...d.data() } as Team))),
+            snap => {
+                const nextTeams = snap.docs.map(d => ({ id: d.id, ...d.data() } as Team));
+                setTeams(nextTeams);
+                cacheTeams(nextTeams.map(team => ({
+                    teamId: team.id,
+                    name: team.name,
+                    leaderId: '',
+                    totalPoints: team.totalPoints || 0,
+                    memberCount: team.members?.length || 0,
+                    members: team.members || [],
+                    stageId: team.stageId || null,
+                    updatedAt: Date.now(),
+                }))).catch(console.error);
+            },
             err => console.error('Teams:', err)
         );
 
         const u2 = onSnapshot(
             collection(db, 'users'),
-            snap => setMemberUsers(
-                snap.docs.map(d => ({ id: d.id, ...d.data() } as MemberUser))
-                    .filter(u => u.role === 'member')
-            ),
+            snap => {
+                const nextMembers = snap.docs
+                    .map(d => ({ id: d.id, ...d.data() } as MemberUser))
+                    .filter(u => u.role === 'member');
+                setMemberUsers(nextMembers);
+                cacheUsers(nextMembers.map(member => ({
+                    userId: member.id,
+                    name: member.name,
+                    email: '',
+                    role: member.role,
+                    teamId: member.teamId,
+                    stageId: member.stageId || null,
+                }))).catch(console.error);
+            },
             () => setMemberUsers([])
         );
 
         return () => { u1(); u2(); };
-    }, [user]);
+    }, [online, user]);
 
     // Build flat member list scoped to the logged-in user's stage
     const attendanceMembers = useMemo<AttendanceMember[]>(() => {
         const stageScopedRole = user?.role === 'admin' || user?.role === 'leader';
         const myStageId = user?.stageId || null;
+        const activeStageFilter = user?.role === 'super_admin' ? attendanceStageFilter : myStageId;
 
-        // For stage-scoped roles, filter teams to their stage
-        const scopedTeams = stageScopedRole && myStageId
-            ? teams.filter(t => t.stageId === myStageId)
-            : teams;
+        const scopedTeams = teams.filter(team => {
+            if (stageScopedRole && myStageId) return team.stageId === myStageId;
+            if (activeStageFilter && activeStageFilter !== 'all') return team.stageId === activeStageFilter;
+            return true;
+        });
 
         const teamMap = new Map(scopedTeams.map(t => [t.id, t]));
         const result: AttendanceMember[] = [];
@@ -177,7 +230,12 @@ export default function TasksPage({ onBack, initialTaskId }: { onBack?: () => vo
             const name = (m.name || '').trim();
             if (!name) continue;
             const team = teamMap.get(m.teamId)!;
-            const key = `u:${m.id}`;
+            const key = buildMemberKey({
+                memberUserId: m.id,
+                teamId: m.teamId,
+                memberName: name,
+            });
+            if (!key) continue;
             if (seenKeys.has(key)) continue;
             seenKeys.add(key);
             result.push({
@@ -195,16 +253,17 @@ export default function TasksPage({ onBack, initialTaskId }: { onBack?: () => vo
             for (const rawName of (team.members || [])) {
                 const name = String(rawName || '').trim();
                 if (!name) continue;
-                const normKey = `n:${team.id}:${name.toLowerCase().replace(/\s+/g, '_')}`;
-                if (seenKeys.has(normKey)) continue;
+                const normName = normalizeMemberName(name);
                 // skip if already added from users
                 const alreadyUser = result.some(
-                    r => r.teamId === team.id && r.name.toLowerCase().trim() === name.toLowerCase().trim()
+                    r => r.teamId === team.id && normalizeMemberName(r.name) === normName
                 );
                 if (alreadyUser) continue;
-                seenKeys.add(normKey);
+                const key = buildMemberKey({ teamId: team.id, memberName: name });
+                if (!key || seenKeys.has(key)) continue;
+                seenKeys.add(key);
                 result.push({
-                    key: normKey,
+                    key,
                     userId: null,
                     name,
                     teamId: team.id,
@@ -216,7 +275,38 @@ export default function TasksPage({ onBack, initialTaskId }: { onBack?: () => vo
 
         // Sort alphabetically by member name
         return result.sort((a, b) => a.name.localeCompare(b.name, 'ar'));
-    }, [teams, memberUsers, user]);
+    }, [attendanceStageFilter, teams, memberUsers, user]);
+
+    useEffect(() => {
+        if (!attendanceTask) {
+            setResolvedAddedKeys(new Set());
+            return;
+        }
+
+        const selectedStageId = user?.role === 'super_admin'
+            ? (attendanceStageFilter === 'all' ? null : attendanceStageFilter)
+            : (user?.stageId || null);
+        let cancelled = false;
+
+        resolveTodayAttendance({
+            taskId: attendanceTask.id,
+            members: attendanceMembers,
+            online,
+            stageId: selectedStageId,
+        }).then((keys) => {
+            if (!cancelled) setResolvedAddedKeys(keys);
+        }).catch((err) => {
+            console.error('Resolve attendance failed:', err);
+            if (!cancelled) setResolvedAddedKeys(new Set());
+        });
+
+        return () => { cancelled = true; };
+    }, [attendanceMembers, attendanceStageFilter, attendanceTask, online, user?.role, user?.stageId]);
+
+    const visibleAddedCount = useMemo(
+        () => attendanceMembers.filter(member => resolvedAddedKeys.has(member.key)).length,
+        [attendanceMembers, resolvedAddedKeys]
+    );
 
     // Give points to a member for the attendance task
     const handleGivePoints = async (member: AttendanceMember) => {
@@ -307,9 +397,9 @@ export default function TasksPage({ onBack, initialTaskId }: { onBack?: () => vo
                 });
             }
 
-            // 4. Build the new addedKeys set, persist to localStorage
-            const newAddedKeys = new Set(addedKeys).add(member.key);
-            setAddedKeys(newAddedKeys);
+            // 4. Build the new attendance set, persist to localStorage
+            const newAddedKeys = new Set(resolvedAddedKeys).add(member.key);
+            setResolvedAddedKeys(newAddedKeys);
             saveAttendedKeys(attendanceTask.id, newAddedKeys);
 
             // 5. Check if ALL members of this team are now attended
@@ -384,7 +474,7 @@ export default function TasksPage({ onBack, initialTaskId }: { onBack?: () => vo
                         });
                         showToast(`✅ تم الحفظ محليًا: ${member.name} + مكافأة فريق "${bonusTeamName}". ستتم المزامنة عند عودة الإنترنت`, 'warning');
                     }
-                    return; // toast already shown (addedKeys & localStorage already updated above)
+                    return; // toast already shown (attendance state and localStorage updated above)
                 }
             }
 
@@ -433,6 +523,7 @@ export default function TasksPage({ onBack, initialTaskId }: { onBack?: () => vo
                     status: t.status,
                     stageId: t.stageId,
                     createdBy: t.createdBy,
+                    isSuperAdminOnly: t.isSuperAdminOnly || false,
                 }))).catch(console.error);
             });
             return () => unsub();
@@ -448,6 +539,7 @@ export default function TasksPage({ onBack, initialTaskId }: { onBack?: () => vo
                 status: t.status,
                 stageId: t.stageId,
                 createdBy: t.createdBy,
+                isSuperAdminOnly: t.isSuperAdminOnly || false,
             } as Task));
 
             if (user?.role !== 'super_admin') {
@@ -609,7 +701,7 @@ export default function TasksPage({ onBack, initialTaskId }: { onBack?: () => vo
                 <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
                     <AnimatePresence>
                         {activeTasks.map((task, i) => {
-                            const isMass = isMassTask(task.title);
+                            const isMass = isMassTaskTitle(task.title);
                             return (
                                 <motion.div
                                     key={task.id}
@@ -621,7 +713,7 @@ export default function TasksPage({ onBack, initialTaskId }: { onBack?: () => vo
                                     onClick={() => {
                                         if (isMass && user) {
                                             setAttendanceTask(task);
-                                            setAddedKeys(new Set());
+                                            setResolvedAddedKeys(new Set());
                                         }
                                     }}
                                 >
@@ -753,9 +845,20 @@ export default function TasksPage({ onBack, initialTaskId }: { onBack?: () => vo
                                     إجمالي الأعضاء: <span className="font-bold text-text-primary">{attendanceMembers.length}</span>
                                 </span>
                                 <span className="text-purple-400 font-bold">
-                                    تم تسجيل: {addedKeys.size}
+                                    تم تسجيل: {visibleAddedCount}
                                 </span>
                             </div>
+
+                            {user?.role === 'super_admin' && (
+                                <div className="px-6 py-4 border-b border-border/20 bg-surface/10">
+                                    <StageFilterBar
+                                        active={attendanceStageFilter}
+                                        onChange={setAttendanceStageFilter}
+                                        showAll={true}
+                                        className="mb-0"
+                                    />
+                                </div>
+                            )}
 
                             {/* Members List */}
                             <div className="overflow-y-auto max-h-[60vh] divide-y divide-border/20">
@@ -763,12 +866,16 @@ export default function TasksPage({ onBack, initialTaskId }: { onBack?: () => vo
                                     <div className="p-12 text-center">
                                         <div className="text-4xl mb-3">👥</div>
                                         <p className="text-text-secondary text-sm font-bold">
-                                            لا يوجد أعضاء في مرحلتك
+                                            {!online
+                                                ? 'لا توجد بيانات أعضاء محفوظة محليًا لهذه المرحلة بعد'
+                                                : user?.role === 'super_admin'
+                                                ? 'لا يوجد أعضاء في المرحلة المحددة'
+                                                : 'لا يوجد أعضاء في مرحلتك'}
                                         </p>
                                     </div>
                                 ) : (
                                     attendanceMembers.map(member => {
-                                        const isAdded = addedKeys.has(member.key);
+                                        const isAdded = resolvedAddedKeys.has(member.key);
                                         const isLoading = addingKey === member.key;
                                         return (
                                             <motion.div
@@ -834,10 +941,10 @@ export default function TasksPage({ onBack, initialTaskId }: { onBack?: () => vo
                                     </p>
                                 </div>
                             )}
-                            {addedKeys.size > 0 && online && (
+                            {visibleAddedCount > 0 && online && (
                                 <div className="px-6 py-3 bg-green-500/5 border-t border-green-500/20">
                                     <p className="text-xs text-green-400 font-bold text-center">
-                                        ✅ تم تسجيل {addedKeys.size} حاضر بنجاح
+                                        ✅ تم تسجيل {visibleAddedCount} حاضر بنجاح
                                     </p>
                                 </div>
                             )}

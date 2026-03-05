@@ -5,6 +5,8 @@ import { useAuth, canRegisterScores } from '@/context/AuthContext';
 import { addPendingScore, getPendingSyncCount } from '@/services/offlineDb';
 import { isOnline, syncPendingScores } from '@/services/syncService';
 import { logActivity } from '@/services/activityLogger';
+import { updateAttendanceCacheForMembers } from '@/services/attendanceCache';
+import { buildMemberKey, normalizeMemberName } from '@/services/memberKeys';
 import { SectionHeader, SyncBadge, useOnlineStatus, useToast } from './ui/SharedUI';
 import { motion, AnimatePresence } from 'motion/react';
 import { AlertTriangle, Check, Clock, Plus, RefreshCw, Shield, Star, TrendingDown, TrendingUp, Trophy, UserRound, Users, X } from 'lucide-react';
@@ -61,10 +63,6 @@ interface MemberOption {
     name: string;
     teamId: string;
     source: 'user' | 'team_list';
-}
-
-function normalizeName(name: string): string {
-    return name.toLowerCase().trim().replace(/\s+/g, ' ');
 }
 
 function toEventDate(value: any): Date {
@@ -172,18 +170,22 @@ export default function ScoreRegistration({ onBack }: { onBack?: () => void }) {
             if (!m.teamId || !teamIds.has(m.teamId)) continue;
             const name = (m.name || '').trim();
             if (!name) continue;
-            map[m.teamId].push({ key: `u:${m.id}`, userId: m.id, name, teamId: m.teamId, source: 'user' });
+            const key = buildMemberKey({ memberUserId: m.id, teamId: m.teamId, memberName: name });
+            if (!key) continue;
+            map[m.teamId].push({ key, userId: m.id, name, teamId: m.teamId, source: 'user' });
         }
 
         for (const team of teams) {
-            const existing = new Set((map[team.id] || []).map(m => normalizeName(m.name)));
+            const existing = new Set((map[team.id] || []).map(m => normalizeMemberName(m.name)));
             for (const rawName of (team.members || [])) {
                 const name = String(rawName || '').trim();
                 if (!name) continue;
-                const norm = normalizeName(name);
+                const norm = normalizeMemberName(name);
                 if (existing.has(norm)) continue;
                 existing.add(norm);
-                map[team.id].push({ key: `n:${team.id}:${norm}`, userId: null, name, teamId: team.id, source: 'team_list' });
+                const key = buildMemberKey({ teamId: team.id, memberName: name });
+                if (!key) continue;
+                map[team.id].push({ key, userId: null, name, teamId: team.id, source: 'team_list' });
             }
         }
 
@@ -253,6 +255,7 @@ export default function ScoreRegistration({ onBack }: { onBack?: () => void }) {
         setSubmitting(true);
         const pointChange = scoreType === 'earn' ? Math.abs(points) : -Math.abs(points);
         const teamDoc = getSelectedTeam();
+        const taskDoc = getSelectedTask();
         const resolvedStageId = teamDoc?.stageId || user.stageId || null;
         const teamMultiplier = availableMembers.length > 0 ? availableMembers.length : 1;
 
@@ -422,11 +425,20 @@ export default function ScoreRegistration({ onBack }: { onBack?: () => void }) {
                     const failures = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
                     const failed = failures.length;
                     const successCount = selectedMembers.length - failed;
+                    const successfulMemberKeys = selectedMembers
+                        .filter((_, index) => results[index]?.status === 'fulfilled')
+                        .map(member => member.key);
 
                     if (successCount > 0) {
                         await updateDoc(doc(db, 'teams', selectedTeam), {
                             totalPoints: increment(pointChange * successCount),
                         });
+                        updateAttendanceCacheForMembers(
+                            selectedTask,
+                            taskDoc?.title || '',
+                            successfulMemberKeys,
+                            scoreType
+                        );
                     }
 
                     const hasPermissionDenied = failures.some(r => isPermissionDeniedError(r.reason));
@@ -444,6 +456,12 @@ export default function ScoreRegistration({ onBack }: { onBack?: () => void }) {
                         showToast(`تم ${successCount} من ${selectedMembers.length} — فشل ${failed}`, 'warning');
                     }
                 } else {
+                    updateAttendanceCacheForMembers(
+                        selectedTask,
+                        taskDoc?.title || '',
+                        selectedMembers.map(member => member.key),
+                        scoreType
+                    );
                     showToast('⚠️ تم الحفظ محلياً للأفراد المختارين', 'warning');
                 }
             }
