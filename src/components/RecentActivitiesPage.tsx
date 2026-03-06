@@ -6,9 +6,11 @@ import { Activity, Trophy, AlertTriangle, Shield, Star, Clock, Users, Plus, Tras
 import { motion } from 'motion/react';
 import StageBadge from './StageBadge';
 import StageFilterBar, { FilterValue } from './StageFilterBar';
+import MemberScoreDetailsModal, { type MemberDetailsTarget } from './MemberScoreDetailsModal';
 import { formatDistanceToNow } from 'date-fns';
 import { ar } from 'date-fns/locale';
 import { useAuth } from '@/context/AuthContext';
+import { buildMemberKey } from '@/services/memberKeys';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -27,6 +29,7 @@ interface ActivityDoc {
     scoreType?: 'earn' | 'deduct';
     targetType?: 'team' | 'member';
     memberKey?: string | null;
+    memberUserId?: string | null;
     memberName?: string | null;
     customNote?: string | null;
 
@@ -77,6 +80,7 @@ export default function RecentActivitiesPage({ onBack }: { onBack?: () => void }
     );
     const [globalStats, setGlobalStats] = useState<GlobalStats | null>(null);
     const [calculating, setCalculating] = useState(false);
+    const [memberDetails, setMemberDetails] = useState<MemberDetailsTarget | null>(null);
 
     useEffect(() => {
         if (user?.role !== 'super_admin') {
@@ -313,7 +317,23 @@ export default function RecentActivitiesPage({ onBack }: { onBack?: () => void }
                                                         <div className="space-y-1.5">
                                                             <h4 className="font-bold text-white text-sm sm:text-base leading-tight">
                                                                 {activity.targetType === 'member' && activity.memberName
-                                                                    ? <span className="text-primary-light">{activity.memberName}</span>
+                                                                    ? (
+                                                                        <button
+                                                                            type="button"
+                                                                            onClick={() => setMemberDetails({
+                                                                                memberKey: activity.memberKey || buildMemberKey({ teamId: activity.teamId, memberName: activity.memberName }),
+                                                                                memberName: activity.memberName,
+                                                                                name: activity.memberName,
+                                                                                memberUserId: activity.memberUserId || null,
+                                                                                teamId: activity.teamId || '',
+                                                                                teamName,
+                                                                                stageId: activity.stageId || null,
+                                                                            })}
+                                                                            className="text-primary-light hover:text-primary transition-colors"
+                                                                        >
+                                                                            {activity.memberName}
+                                                                        </button>
+                                                                    )
                                                                     : teamName
                                                                 }
                                                             </h4>
@@ -406,6 +426,14 @@ export default function RecentActivitiesPage({ onBack }: { onBack?: () => void }
                     </div>
                 ))
             )}
+
+            <MemberScoreDetailsModal
+                member={memberDetails}
+                onClose={() => setMemberDetails(null)}
+                stageScope={user.role === 'super_admin'
+                    ? (stageFilter === 'all' ? null : stageFilter)
+                    : (user.stageId || memberDetails?.stageId || null)}
+            />
         </div>
     );
 }

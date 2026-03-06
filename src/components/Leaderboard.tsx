@@ -1,12 +1,16 @@
-import { useEffect, useState } from 'react';
-import { collection, onSnapshot, orderBy, query, where } from 'firebase/firestore';
+import { useEffect, useRef, useState } from 'react';
+import { collection, onSnapshot, query } from 'firebase/firestore';
 import { db } from '@/services/firebase';
 import { motion, AnimatePresence } from 'motion/react';
-import { Trophy, UserRound, X } from 'lucide-react';
+import { Trophy, UserRound, X, ChevronLeft } from 'lucide-react';
 import StageFilterBar, { FilterValue } from './StageFilterBar';
+import MemberScoreDetailsModal, { type MemberDetailsTarget } from './MemberScoreDetailsModal';
 import { SectionHeader } from './ui/SharedUI';
 import { STAGES_LIST, StageId } from '@/config/stages';
-import { Bar, BarChart, Cell, ResponsiveContainer, Tooltip, XAxis } from 'recharts';
+import { Bar, BarChart, Cell, Tooltip, XAxis } from 'recharts';
+import { useAuth } from '@/context/AuthContext';
+import { buildMemberKey } from '@/services/memberKeys';
+import { aggregateMemberStatsTotalsFromDocs, mergeTeamMemberTotals } from '@/services/memberTotals';
 
 interface Team {
     id: string;
@@ -23,6 +27,8 @@ interface MemberStat {
     teamId: string;
     stageId: string;
     totalPoints: number;
+    memberKey?: string | null;
+    memberUserId?: string | null;
 }
 
 type BoardType = 'teams' | 'members';
@@ -33,34 +39,14 @@ const EMPTY_MEMBERS_BY_STAGE: Record<StageId, MemberStat[]> = {
     grade9: [],
 };
 
-function asNonEmptyString(value: unknown): string | null {
-    if (typeof value !== 'string') return null;
-    const trimmed = value.trim();
-    return trimmed ? trimmed : null;
-}
-
 function asStageId(value: unknown): StageId | null {
     return value === 'grade7' || value === 'grade8' || value === 'grade9'
         ? value
         : null;
 }
 
-function normalizeMemberName(value: string): string {
-    return value.toLowerCase().replace(/\s+/g, ' ').trim();
-}
-
-function parseLegacyMemberStatId(docId: string): { teamId: string; memberName: string } | null {
-    const match = /^m:(team_\d+)_(.+)$/.exec(docId);
-    if (!match) return null;
-    const memberName = match[2].replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
-    if (!memberName) return null;
-    return {
-        teamId: match[1],
-        memberName,
-    };
-}
-
 export default function Leaderboard({ onBack }: { onBack?: () => void }) {
+    const { user } = useAuth();
     const [filter, setFilter] = useState<FilterValue>('all');
     const [boardType, setBoardType] = useState<BoardType>('teams');
     const [isMounted, setIsMounted] = useState(false);
@@ -75,8 +61,10 @@ export default function Leaderboard({ onBack }: { onBack?: () => void }) {
         grade8: [],
         grade9: [],
     });
-
+    const chartContainerRefs = useRef<Record<string, HTMLDivElement | null>>({});
+    const [chartSizes, setChartSizes] = useState<Record<string, { width: number; height: number }>>({});
     const [selectedTeam, setSelectedTeam] = useState<Team | null>(null);
+    const [memberDetails, setMemberDetails] = useState<MemberDetailsTarget | null>(null);
 
     useEffect(() => {
         // Fetch all teams once and filter/sort in-memory to avoid index requirements
@@ -112,50 +100,33 @@ export default function Leaderboard({ onBack }: { onBack?: () => void }) {
     }, []);
 
     useEffect(() => {
-        // Fetch all member_stats once and normalize in-memory (supports legacy malformed docs)
+        // Fetch all member totals from member_stats so every role sees the same aggregated values.
         const q = query(collection(db, 'member_stats'));
         const unsubscribe = onSnapshot(q, (snap) => {
-            const groupedByStage: Record<StageId, Map<string, MemberStat>> = {
-                grade7: new Map(),
-                grade8: new Map(),
-                grade9: new Map(),
-            };
-
-            snap.docs.forEach((docSnap) => {
-                const raw = docSnap.data() as Partial<MemberStat> & { memberKey?: unknown };
-                const parsedLegacy = parseLegacyMemberStatId(docSnap.id);
-                const teamId = asNonEmptyString(raw.teamId) || parsedLegacy?.teamId || null;
-                const memberName = asNonEmptyString(raw.memberName) || parsedLegacy?.memberName || null;
-                const stageId =
-                    asStageId(raw.stageId) ||
-                    (teamId ? asStageId(teamsById[teamId]?.stageId) : null);
-                const totalPoints = Number(raw.totalPoints || 0);
-                const memberKey = asNonEmptyString(raw.memberKey);
-
-                if (!stageId || !teamId || !memberName || !Number.isFinite(totalPoints)) return;
-
-                const normalizedIdentity = memberKey || `legacy:${teamId}:${normalizeMemberName(memberName)}`;
-                const existing = groupedByStage[stageId].get(normalizedIdentity);
-
-                if (existing) {
-                    existing.totalPoints += totalPoints;
-                    return;
-                }
-
-                groupedByStage[stageId].set(normalizedIdentity, {
-                    id: normalizedIdentity,
-                    memberName,
-                    teamId,
-                    stageId,
-                    totalPoints,
-                });
-            });
+            const aggregated = aggregateMemberStatsTotalsFromDocs(
+                snap.docs,
+                (teamId) => teamsById[teamId]?.stageId || null
+            );
 
             const newMembersByStage: Record<StageId, MemberStat[]> = {
-                grade7: Array.from(groupedByStage.grade7.values()),
-                grade8: Array.from(groupedByStage.grade8.values()),
-                grade9: Array.from(groupedByStage.grade9.values()),
+                grade7: [],
+                grade8: [],
+                grade9: [],
             };
+
+            aggregated.forEach((member) => {
+                const stageId = asStageId(member.stageId);
+                if (!stageId) return;
+                newMembersByStage[stageId].push({
+                    id: member.id,
+                    memberName: member.memberName,
+                    teamId: member.teamId,
+                    stageId,
+                    totalPoints: member.totalPoints,
+                    memberKey: member.memberKey || null,
+                    memberUserId: member.memberUserId || null,
+                });
+            });
 
             STAGES_LIST.forEach(stage => {
                 newMembersByStage[stage.id as StageId].sort((a, b) => (b.totalPoints || 0) - (a.totalPoints || 0));
@@ -172,6 +143,58 @@ export default function Leaderboard({ onBack }: { onBack?: () => void }) {
     useEffect(() => {
         setIsMounted(true);
     }, []);
+
+    useEffect(() => {
+        if (!isMounted) {
+            setChartSizes({});
+            return;
+        }
+
+        const updateSize = (key: string, node: HTMLDivElement | null) => {
+            if (!node) {
+                setChartSizes((current) => {
+                    if (!(key in current)) return current;
+                    const next = { ...current };
+                    delete next[key];
+                    return next;
+                });
+                return;
+            }
+
+            const { width, height } = node.getBoundingClientRect();
+            const nextWidth = width > 0 ? Math.floor(width) : 0;
+            const nextHeight = height > 0 ? Math.floor(height) : 0;
+            setChartSizes((current) => {
+                const existing = current[key];
+                if (existing && existing.width === nextWidth && existing.height === nextHeight) {
+                    return current;
+                }
+                return {
+                    ...current,
+                    [key]: { width: nextWidth, height: nextHeight },
+                };
+            });
+        };
+
+        const resizeObserver = new ResizeObserver((entries) => {
+            entries.forEach((entry) => {
+                const node = entry.target as HTMLDivElement;
+                const key = node.dataset.chartKey;
+                if (!key) return;
+                updateSize(key, node);
+            });
+        });
+
+        Object.entries(chartContainerRefs.current).forEach(([key, node]) => {
+            if (!node) return;
+            updateSize(key, node);
+            resizeObserver.observe(node);
+        });
+
+        return () => {
+            resizeObserver.disconnect();
+        };
+    }, [isMounted, boardType, filter, teamsByStage, membersByStage]);
 
     const getTeamName = (teamId: string): string => {
         return teamsById[teamId]?.name || 'فريق غير معروف';
@@ -190,10 +213,12 @@ export default function Leaderboard({ onBack }: { onBack?: () => void }) {
             points: item.totalPoints,
             opacity: 1 - (i * 0.15),
         }));
+        const chartKey = `${stage.id}-${boardType}`;
+        const chartSize = chartSizes[chartKey];
 
         return (
             <motion.div
-                key={`${stage.id}-${boardType}`}
+                key={chartKey}
                 layout
                 initial={{ opacity: 0, scale: 0.95 }}
                 animate={{ opacity: 1, scale: 1 }}
@@ -208,10 +233,21 @@ export default function Leaderboard({ onBack }: { onBack?: () => void }) {
                 </div>
 
                 {top5.length > 0 ? (
-                    <div className="p-4 border-b border-border/30" style={{ height: 220 }} dir="ltr">
-                        <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0} debounce={1}>
-                            {isMounted && (
-                                <BarChart data={top5} margin={{ top: 20, right: 0, left: 0, bottom: 0 }}>
+                    <div className="p-4 border-b border-border/30" dir="ltr">
+                        <div
+                            ref={(node) => {
+                                chartContainerRefs.current[chartKey] = node;
+                            }}
+                            data-chart-key={chartKey}
+                            className="h-[220px] w-full min-w-0"
+                        >
+                            {isMounted && chartSize && chartSize.width > 0 && chartSize.height > 0 && (
+                                <BarChart
+                                    width={chartSize.width}
+                                    height={chartSize.height}
+                                    data={top5}
+                                    margin={{ top: 20, right: 0, left: 0, bottom: 0 }}
+                                >
                                     <Tooltip
                                         cursor={{ fill: 'rgba(255,255,255,0.02)' }}
                                         contentStyle={{ backgroundColor: '#0a0a0f', borderColor: stage.color, borderRadius: '12px', color: '#fff' }}
@@ -225,7 +261,7 @@ export default function Leaderboard({ onBack }: { onBack?: () => void }) {
                                     <XAxis dataKey="name" tick={{ fill: '#888', fontSize: 11, fontWeight: 'bold' }} axisLine={false} tickLine={false} />
                                 </BarChart>
                             )}
-                        </ResponsiveContainer>
+                        </div>
                     </div>
                 ) : (
                     <div className="p-6 text-center text-text-muted text-sm border-b border-border/30 flex items-center justify-center flex-1 min-h-[220px]">
@@ -241,7 +277,7 @@ export default function Leaderboard({ onBack }: { onBack?: () => void }) {
                             <div
                                 key={item.id}
                                 onClick={() => isTeams && setSelectedTeam(item as Team)}
-                                className={`flex items-center gap-3 p-3 hover:bg-surface/50 rounded-xl transition-colors ${isTeams ? 'cursor-pointer' : ''}`}
+                                className={`group flex items-center gap-3 p-3 hover:bg-surface/50 rounded-xl transition-colors ${isTeams ? 'cursor-pointer' : ''}`}
                             >
                                 <span
                                     className={
@@ -255,9 +291,45 @@ export default function Leaderboard({ onBack }: { onBack?: () => void }) {
                                 </span>
 
                                 <div className="flex-1 min-w-0">
-                                    <h4 className={`font-bold text-sm truncate ${isRank1 ? '' : 'text-text-secondary'}`} style={isRank1 ? { color: stage.color } : {}}>
-                                        {isTeams ? item.name : item.memberName}
-                                    </h4>
+                                    {isTeams ? (
+                                        <div className="min-w-0">
+                                            <h4 className={`font-bold text-sm truncate ${isRank1 ? '' : 'text-text-secondary'}`} style={isRank1 ? { color: stage.color } : {}}>
+                                                {item.name}
+                                            </h4>
+                                            <span className="mt-1 inline-flex items-center gap-1 rounded-full border border-accent/15 bg-accent/10 px-2 py-0.5 text-[10px] font-bold text-accent/90 transition-colors group-hover:border-accent/35 group-hover:bg-accent/15">
+                                                اضغط لعرض الفريق
+                                                <ChevronLeft className="w-3 h-3" />
+                                            </span>
+                                        </div>
+                                    ) : (
+                                        <button
+                                            type="button"
+                                            onClick={() => setMemberDetails({
+                                                memberKey: item.memberKey || buildMemberKey({
+                                                    memberUserId: item.memberUserId || undefined,
+                                                    teamId: item.teamId,
+                                                    memberName: item.memberName,
+                                                }),
+                                                memberUserId: item.memberUserId || null,
+                                                memberName: item.memberName,
+                                                name: item.memberName,
+                                                teamId: item.teamId,
+                                                teamName: getTeamName(item.teamId),
+                                                stageId,
+                                                totalPoints: item.totalPoints,
+                                            })}
+                                            className="group text-right max-w-full"
+                                            style={isRank1 ? { color: stage.color } : undefined}
+                                        >
+                                            <span className={`font-bold text-sm truncate block hover:text-primary-light transition-colors ${isRank1 ? '' : 'text-text-secondary'}`}>
+                                                {item.memberName}
+                                            </span>
+                                            <span className="mt-1 inline-flex items-center gap-1 rounded-full border border-primary/20 bg-primary/10 px-2 py-0.5 text-[10px] font-bold text-primary-light/85 transition-colors group-hover:border-primary/40 group-hover:bg-primary/15">
+                                                اضغط لعرض البيانات
+                                                <ChevronLeft className="w-3 h-3" />
+                                            </span>
+                                        </button>
+                                    )}
                                     {isTeams ? (
                                         item.memberCount > 0 && (
                                             <p className="text-[10px] text-text-muted mt-0.5">👥 {item.memberCount} عضو</p>
@@ -360,19 +432,14 @@ export default function Leaderboard({ onBack }: { onBack?: () => void }) {
                             <div className="p-4 max-h-[60vh] overflow-y-auto">
                                 <h4 className="font-bold text-text-primary mb-3 px-2">أعضاء الفريق</h4>
                                 {(() => {
-                                    const teamMembers = (selectedTeam.members || []).map(memberName => {
-                                        const normalizedMemberName = normalizeMemberName(memberName || '');
-                                        const stat = (membersByStage[selectedTeam.stageId as StageId] || [])
-                                            .find(m =>
-                                                m.teamId === selectedTeam.id &&
-                                                normalizeMemberName(m.memberName || '') === normalizedMemberName
-                                            );
-                                        return {
-                                            id: stat?.id || `${selectedTeam.id}-${memberName}`,
-                                            memberName,
-                                            totalPoints: stat ? stat.totalPoints : 0
-                                        };
-                                    }).sort((a, b) => b.totalPoints - a.totalPoints);
+                                    const stageMembers = (membersByStage[selectedTeam.stageId as StageId] || [])
+                                        .filter(member => member.teamId === selectedTeam.id);
+                                    const teamMembers = mergeTeamMemberTotals({
+                                        teamId: selectedTeam.id,
+                                        teamMembers: selectedTeam.members || [],
+                                        entries: stageMembers,
+                                        resolveStageId: (teamId) => teamsById[teamId]?.stageId || null,
+                                    });
 
                                     if (teamMembers.length === 0) {
                                         return (
@@ -402,7 +469,32 @@ export default function Leaderboard({ onBack }: { onBack?: () => void }) {
                                                                 }`}>
                                                                 {rank === 1 ? '🥇' : rank === 2 ? '🥈' : rank === 3 ? '🥉' : rank}
                                                             </div>
-                                                            <span className="font-bold text-text-primary text-sm">{member.memberName}</span>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => setMemberDetails({
+                                                                    memberKey: member.memberKey || buildMemberKey({
+                                                                        memberUserId: member.memberUserId || undefined,
+                                                                        teamId: selectedTeam.id,
+                                                                        memberName: member.memberName,
+                                                                    }),
+                                                                    memberUserId: member.memberUserId || null,
+                                                                    memberName: member.memberName,
+                                                                    name: member.memberName,
+                                                                    teamId: selectedTeam.id,
+                                                                    teamName: selectedTeam.name,
+                                                                    stageId: member.stageId || selectedTeam.stageId,
+                                                                    totalPoints: member.totalPoints,
+                                                                })}
+                                                                className="group text-right"
+                                                            >
+                                                                <span className="font-bold text-text-primary text-sm block group-hover:text-primary-light transition-colors">
+                                                                    {member.memberName}
+                                                                </span>
+                                                                <span className="mt-1 inline-flex items-center gap-1 rounded-full border border-primary/20 bg-primary/10 px-2 py-0.5 text-[10px] font-bold text-primary-light/85 transition-colors group-hover:border-primary/40 group-hover:bg-primary/15">
+                                                                    اضغط لعرض البيانات
+                                                                    <ChevronLeft className="w-3 h-3" />
+                                                                </span>
+                                                            </button>
                                                         </div>
                                                         <div className="text-right flex flex-col items-end justify-center">
                                                             <span className={`font-black ${rank === 1 ? 'text-amber-500' :
@@ -429,6 +521,14 @@ export default function Leaderboard({ onBack }: { onBack?: () => void }) {
                     </div>
                 )}
             </AnimatePresence>
+
+            <MemberScoreDetailsModal
+                member={memberDetails}
+                onClose={() => setMemberDetails(null)}
+                stageScope={user?.role === 'super_admin'
+                    ? (filter === 'all' ? null : filter)
+                    : (user?.stageId || memberDetails?.stageId || selectedTeam?.stageId || null)}
+            />
         </div>
     );
 }

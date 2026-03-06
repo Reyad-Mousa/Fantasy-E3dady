@@ -19,11 +19,15 @@ import {
     isMassTaskTitle,
     saveAttendedKeys,
 } from '@/services/attendanceCache';
-import { resolveTodayAttendance } from '@/services/attendanceResolver';
+import {
+    resolveTodayAttendance,
+    subscribeTodayAttendance,
+} from '@/services/attendanceResolver';
 import { buildMemberKey, normalizeMemberName } from '@/services/memberKeys';
 import { useOnlineStatus, useToast, EmptyState, SectionHeader } from './ui/SharedUI';
 import StageBadge from './StageBadge';
 import StageFilterBar, { type FilterValue } from './StageFilterBar';
+import MemberScoreDetailsModal, { type MemberDetailsTarget } from './MemberScoreDetailsModal';
 import { motion, AnimatePresence } from 'motion/react';
 import {
     ListTodo, Plus, Clock, CheckCircle2, XCircle, Trophy, Target,
@@ -99,6 +103,7 @@ export default function TasksPage({ onBack, initialTaskId }: { onBack?: () => vo
     const [memberUsers, setMemberUsers] = useState<MemberUser[]>([]);
     const [addingKey, setAddingKey] = useState<string | null>(null);
     const [resolvedAddedKeys, setResolvedAddedKeys] = useState<Set<string>>(new Set());
+    const [memberDetails, setMemberDetails] = useState<MemberDetailsTarget | null>(null);
     const [attendanceStageFilter, setAttendanceStageFilter] = useState<FilterValue>(
         user?.role === 'super_admin' ? 'all' : (user?.stageId as FilterValue) || 'all'
     );
@@ -288,6 +293,26 @@ export default function TasksPage({ onBack, initialTaskId }: { onBack?: () => vo
             : (user?.stageId || null);
         let cancelled = false;
 
+        if (online) {
+            const unsubscribe = subscribeTodayAttendance({
+                taskId: attendanceTask.id,
+                members: attendanceMembers,
+                stageId: selectedStageId,
+                onResolved: (keys) => {
+                    if (!cancelled) setResolvedAddedKeys(keys);
+                },
+                onError: (err) => {
+                    console.error('Subscribe attendance failed:', err);
+                    if (!cancelled) setResolvedAddedKeys(new Set());
+                },
+            });
+
+            return () => {
+                cancelled = true;
+                unsubscribe();
+            };
+        }
+
         resolveTodayAttendance({
             taskId: attendanceTask.id,
             members: attendanceMembers,
@@ -357,6 +382,7 @@ export default function TasksPage({ onBack, initialTaskId }: { onBack?: () => vo
                     scoreType: 'earn',
                     targetType: 'member',
                     memberKey: member.key,
+                    memberUserId: member.userId,
                     memberName: member.name,
                     stageId,
                     actorId: user.uid,
@@ -887,7 +913,7 @@ export default function TasksPage({ onBack, initialTaskId }: { onBack?: () => vo
                                                     }`}
                                             >
                                                 {/* Avatar */}
-                                                <div className={`w-9 h-9 rounded-xl flex items-center justify-center text-sm font-bold shrink-0 ${isAdded
+                                    <div className={`w-9 h-9 rounded-xl flex items-center justify-center text-sm font-bold shrink-0 ${isAdded
                                                     ? 'bg-green-500/20 text-green-400'
                                                     : 'bg-primary/20 text-primary-light'
                                                     }`}>
@@ -895,8 +921,20 @@ export default function TasksPage({ onBack, initialTaskId }: { onBack?: () => vo
                                                 </div>
 
                                                 {/* Info */}
-                                                <div className="flex-1 min-w-0">
-                                                    <p className="font-bold text-text-primary text-sm truncate">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setMemberDetails({
+                                                        memberKey: member.key,
+                                                        memberUserId: member.userId,
+                                                        memberName: member.name,
+                                                        name: member.name,
+                                                        teamId: member.teamId,
+                                                        teamName: member.teamName,
+                                                        stageId: member.stageId,
+                                                    })}
+                                                    className="flex-1 min-w-0 text-right"
+                                                >
+                                                    <p className="font-bold text-text-primary text-sm truncate hover:text-primary-light transition-colors">
                                                         {member.name}
                                                     </p>
                                                     <div className="flex items-center gap-2 mt-0.5 flex-wrap">
@@ -906,7 +944,7 @@ export default function TasksPage({ onBack, initialTaskId }: { onBack?: () => vo
                                                             {member.teamName}
                                                         </span>
                                                     </div>
-                                                </div>
+                                                </button>
 
                                                 {/* Action button */}
                                                 <button
@@ -952,6 +990,14 @@ export default function TasksPage({ onBack, initialTaskId }: { onBack?: () => vo
                     </div>
                 )}
             </AnimatePresence>
+
+            <MemberScoreDetailsModal
+                member={memberDetails}
+                onClose={() => setMemberDetails(null)}
+                stageScope={user?.role === 'super_admin'
+                    ? (attendanceStageFilter === 'all' ? null : attendanceStageFilter)
+                    : (user?.stageId || memberDetails?.stageId || null)}
+            />
 
             {/* Create Task Modal */}
             <AnimatePresence>

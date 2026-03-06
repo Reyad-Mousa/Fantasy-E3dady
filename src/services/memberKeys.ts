@@ -63,6 +63,14 @@ export const buildMemberKeyAliases = (input: MemberKeyInput): string[] => {
         addLegacyVariants(canonical);
     }
 
+    const teamNameKey = buildMemberKey({
+        teamId: input.teamId,
+        memberName: input.memberName,
+    });
+    if (teamNameKey) {
+        addLegacyVariants(teamNameKey);
+    }
+
     const userId = input.memberUserId?.trim();
     if (userId) aliases.add(`u:${userId}`);
 

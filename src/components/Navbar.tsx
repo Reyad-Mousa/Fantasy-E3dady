@@ -31,7 +31,7 @@ const navItems: NavItem[] = [
   { id: 'teams', label: 'الفرق', icon: <Users className="w-5 h-5" />, roles: ['super_admin', 'admin', 'leader'] },
   { id: 'scores', label: 'النقاط', icon: <BarChart3 className="w-5 h-5" />, roles: ['super_admin', 'admin', 'leader'] },
   { id: 'activities', label: 'النشاطات', icon: <Activity className="w-5 h-5" />, roles: ['super_admin', 'admin', 'leader'] },
-  { id: 'members', label: 'الأعضاء', icon: <Users className="w-5 h-5" />, roles: ['super_admin'] },
+  { id: 'members', label: 'الأعضاء', icon: <Users className="w-5 h-5" />, roles: ['super_admin', 'admin'] },
   { id: 'admin', label: 'لوحة التحكم', icon: <Settings className="w-5 h-5" />, roles: ['super_admin'] },
 ];
 

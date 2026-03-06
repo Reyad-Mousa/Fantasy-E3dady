@@ -109,8 +109,19 @@ const toAppUser = async (firebaseUser: FirebaseUser): Promise<User | null> => {
   }
 
   const teamId = claimsProfile.teamId ?? asNonEmptyString(userDocData?.teamId);
-  const stageId = claimsProfile.stageId ?? asNonEmptyString(userDocData?.stageId);
+  let stageId = claimsProfile.stageId ?? asNonEmptyString(userDocData?.stageId);
   const stageName = claimsProfile.stageName ?? asNonEmptyString(userDocData?.stageName);
+
+  if (!stageId && teamId) {
+    try {
+      const teamDoc = await getDoc(doc(db, 'teams', teamId));
+      if (teamDoc.exists()) {
+        stageId = asNonEmptyString(teamDoc.data().stageId);
+      }
+    } catch (err) {
+      console.warn('Failed to infer stageId from team doc:', err);
+    }
+  }
 
   return {
     uid: firebaseUser.uid,

@@ -8,6 +8,7 @@ import { logActivity } from '@/services/activityLogger';
 import { updateAttendanceCacheForMembers } from '@/services/attendanceCache';
 import { buildMemberKey, normalizeMemberName } from '@/services/memberKeys';
 import { SectionHeader, SyncBadge, useOnlineStatus, useToast } from './ui/SharedUI';
+import MemberScoreDetailsModal, { type MemberDetailsTarget } from './MemberScoreDetailsModal';
 import { motion, AnimatePresence } from 'motion/react';
 import { AlertTriangle, Check, Clock, Plus, RefreshCw, Shield, Star, TrendingDown, TrendingUp, Trophy, UserRound, Users, X } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
@@ -29,6 +30,7 @@ interface ScoreActivity {
     scoreType?: 'earn' | 'deduct';
     targetType?: 'team' | 'member';
     memberKey?: string | null;
+    memberUserId?: string | null;
     memberName?: string | null;
     customNote?: string | null;
     actorName?: string | null;
@@ -97,6 +99,7 @@ export default function ScoreRegistration({ onBack }: { onBack?: () => void }) {
     const [pendingCount, setPendingCount] = useState(0);
     const [syncing, setSyncing] = useState(false);
     const [submitting, setSubmitting] = useState(false);
+    const [memberDetails, setMemberDetails] = useState<MemberDetailsTarget | null>(null);
 
     const [selectedTeam, setSelectedTeam] = useState('');
     const [selectedTask, setSelectedTask] = useState('');
@@ -408,6 +411,7 @@ export default function ScoreRegistration({ onBack }: { onBack?: () => void }) {
                                 scoreType,
                                 targetType: 'member',
                                 memberKey: member.key,
+                                memberUserId: member.userId,
                                 memberName: member.name,
                                 stageId: resolvedStageId,
                                 actorId: user.uid,
@@ -642,7 +646,24 @@ export default function ScoreRegistration({ onBack }: { onBack?: () => void }) {
                                                             <div className="w-6 h-6 rounded-full bg-primary/20 flex items-center justify-center text-[10px] font-bold text-primary shrink-0">
                                                                 {(member.name || '؟').charAt(0)}
                                                             </div>
-                                                            <span className="text-xs font-bold flex-1 truncate">{member.name}</span>
+                                                            <button
+                                                                type="button"
+                                                                onClick={(event) => {
+                                                                    event.stopPropagation();
+                                                                    setMemberDetails({
+                                                                        memberKey: member.key,
+                                                                        memberUserId: member.userId,
+                                                                        memberName: member.name,
+                                                                        name: member.name,
+                                                                        teamId: member.teamId,
+                                                                        teamName: getSelectedTeam()?.name || teams.find(team => team.id === member.teamId)?.name || 'فريق غير معروف',
+                                                                        stageId: getSelectedTeam()?.stageId || teams.find(team => team.id === member.teamId)?.stageId || null,
+                                                                    });
+                                                                }}
+                                                                className="text-xs font-bold flex-1 truncate text-right hover:text-primary-light transition-colors"
+                                                            >
+                                                                {member.name}
+                                                            </button>
                                                             {member.source === 'team_list' && (
                                                                 <span className="text-[9px] text-text-muted shrink-0">قائمة</span>
                                                             )}
@@ -658,7 +679,21 @@ export default function ScoreRegistration({ onBack }: { onBack?: () => void }) {
                                                 {selectedMembers.map(m => (
                                                     <span key={m.key}
                                                         className="flex items-center gap-1 text-[11px] font-bold bg-accent/15 text-accent border border-accent/30 px-2 py-0.5 rounded-full">
-                                                        {m.name}
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => setMemberDetails({
+                                                                memberKey: m.key,
+                                                                memberUserId: m.userId,
+                                                                memberName: m.name,
+                                                                name: m.name,
+                                                                teamId: m.teamId,
+                                                                teamName: getSelectedTeam()?.name || teams.find(team => team.id === m.teamId)?.name || 'فريق غير معروف',
+                                                                stageId: getSelectedTeam()?.stageId || teams.find(team => team.id === m.teamId)?.stageId || null,
+                                                            })}
+                                                            className="hover:text-primary-light transition-colors"
+                                                        >
+                                                            {m.name}
+                                                        </button>
                                                         <button type="button" onClick={() => toggleMember(m.key)}
                                                             className="hover:text-danger transition-colors">
                                                             <X className="w-2.5 h-2.5" />
@@ -821,7 +856,23 @@ export default function ScoreRegistration({ onBack }: { onBack?: () => void }) {
                                                     <div className="space-y-1.5 min-w-0">
                                                         <h4 className="font-bold text-text-primary text-sm sm:text-base leading-tight">
                                                             {isMember
-                                                                ? <span className="text-primary-light">{activity.memberName || 'فرد'}</span>
+                                                                ? (
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => setMemberDetails({
+                                                                            memberKey: activity.memberKey || buildMemberKey({ teamId: activity.teamId, memberName: activity.memberName || undefined }),
+                                                                            memberUserId: activity.memberUserId || null,
+                                                                            memberName: activity.memberName || 'فرد',
+                                                                            name: activity.memberName || 'فرد',
+                                                                            teamId: activity.teamId || '',
+                                                                            teamName,
+                                                                            stageId: activity.stageId || null,
+                                                                        })}
+                                                                        className="text-primary-light hover:text-primary transition-colors"
+                                                                    >
+                                                                        {activity.memberName || 'فرد'}
+                                                                    </button>
+                                                                )
                                                                 : teamName
                                                             }
                                                         </h4>
@@ -867,6 +918,14 @@ export default function ScoreRegistration({ onBack }: { onBack?: () => void }) {
                     </div>
                 </div>
             </div>
+
+            <MemberScoreDetailsModal
+                member={memberDetails}
+                onClose={() => setMemberDetails(null)}
+                stageScope={user?.role === 'super_admin'
+                    ? null
+                    : (user?.stageId || memberDetails?.stageId || null)}
+            />
         </div>
     );
 }

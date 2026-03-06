@@ -30,6 +30,7 @@ function isTabAllowed(tab: string, user: any): boolean {
     case 'scores':
       return !!user && ['super_admin', 'admin', 'leader'].includes(user.role);
     case 'members':
+      return !!user && ['super_admin', 'admin'].includes(user.role);
     case 'admin':
       return !!user && user.role === 'super_admin';
     case 'activities':
@@ -99,7 +100,7 @@ function AppContent() {
           ? <ScoreRegistration onBack={() => handleNavigate('home')} />
           : <Home onNavigate={handleNavigate} />;
       case 'members':
-        return user?.role === 'super_admin'
+        return user && ['super_admin', 'admin'].includes(user.role)
           ? <MembersPage onBack={() => handleNavigate('home')} />
           : <Home onNavigate={handleNavigate} />;
       case 'admin':

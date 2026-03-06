@@ -30,6 +30,7 @@ export interface ScoreActivity extends BaseActivity {
     scoreType: 'earn' | 'deduct';
     targetType: 'team' | 'member';
     memberKey?: string | null;
+    memberUserId?: string | null;
     memberName?: string | null;
     customNote?: string | null;
 }

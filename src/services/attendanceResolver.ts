@@ -1,6 +1,13 @@
-import { collection, getDocs, query, where } from 'firebase/firestore';
+import {
+    collection,
+    getDocs,
+    onSnapshot,
+    query,
+    where,
+    type QueryDocumentSnapshot,
+    type DocumentData,
+} from 'firebase/firestore';
 import { db } from './firebase';
-import { getUnsyncedScores, type PendingScore } from './offlineDb';
 import { loadAttendedKeys } from './attendanceCache';
 import { buildMemberKeyAliases } from './memberKeys';
 
@@ -18,10 +25,20 @@ interface ResolveTodayAttendanceArgs {
     stageId?: string | null;
 }
 
+interface SubscribeTodayAttendanceArgs {
+    taskId: string;
+    members: AttendanceMemberRef[];
+    stageId?: string | null;
+    onResolved: (keys: Set<string>) => void;
+    onError?: (error: unknown) => void;
+}
+
 interface ScoreLike {
+    kind?: string | null;
     taskId?: string | null;
     targetType?: string | null;
     type?: 'earn' | 'deduct' | string;
+    scoreType?: 'earn' | 'deduct' | string;
     memberKey?: string | null;
     memberUserId?: string | null;
     memberName?: string | null;
@@ -35,6 +52,14 @@ const resolveTodayWindow = () => {
     const end = new Date(start);
     end.setDate(end.getDate() + 1);
     return { start, end };
+};
+
+const buildTodayConstraints = () => {
+    const { start, end } = resolveTodayWindow();
+    return [
+        where('timestamp', '>=', start),
+        where('timestamp', '<', end),
+    ];
 };
 
 const buildAliasMap = (members: AttendanceMemberRef[]) => {
@@ -74,14 +99,43 @@ const applyScoreDelta = (
     aliasMap: Map<string, string>,
     counters: Map<string, number>
 ) => {
+    if (score.kind && score.kind !== 'score') return;
     if (score.taskId !== taskId) return;
     if ((score.targetType ?? 'team') !== 'member') return;
 
     const canonicalKey = resolveCanonicalKey(score, aliasMap);
     if (!canonicalKey) return;
 
-    const delta = score.type === 'deduct' ? -1 : 1;
+    const resolvedType = score.type === 'deduct' || score.scoreType === 'deduct'
+        ? 'deduct'
+        : 'earn';
+    const delta = resolvedType === 'deduct' ? -1 : 1;
     counters.set(canonicalKey, (counters.get(canonicalKey) ?? 0) + delta);
+};
+
+const resolveAttendanceFromDocs = (
+    docs: Array<QueryDocumentSnapshot<DocumentData>>,
+    taskId: string,
+    aliasMap: Map<string, string>
+): Set<string> => {
+    const counters = new Map<string, number>();
+    for (const entry of docs) {
+        applyScoreDelta(entry.data() as ScoreLike, taskId, aliasMap, counters);
+    }
+
+    const result = new Set<string>();
+    counters.forEach((net, key) => {
+        if (net > 0) result.add(key);
+    });
+    return result;
+};
+
+const getScoresFallbackSnapshot = async (stageId: string | null) => {
+    const constraints = buildTodayConstraints();
+    if (stageId) {
+        constraints.push(where('stageId', '==', stageId));
+    }
+    return getDocs(query(collection(db, 'scores'), ...constraints));
 };
 
 export const resolveTodayAttendance = async ({
@@ -93,40 +147,81 @@ export const resolveTodayAttendance = async ({
     if (!taskId || members.length === 0) return new Set();
 
     const aliasMap = buildAliasMap(members);
-    const counters = new Map<string, number>();
 
     if (online) {
-        const { start, end } = resolveTodayWindow();
-        const constraints = [
-            where('timestamp', '>=', start),
-            where('timestamp', '<', end),
-        ];
-        if (stageId) {
-            constraints.push(where('stageId', '==', stageId));
+        try {
+            const snapshot = await getDocs(query(collection(db, 'activities'), ...buildTodayConstraints()));
+            return resolveAttendanceFromDocs(snapshot.docs, taskId, aliasMap);
+        } catch (activityError) {
+            try {
+                const snapshot = await getScoresFallbackSnapshot(stageId);
+                return resolveAttendanceFromDocs(snapshot.docs, taskId, aliasMap);
+            } catch {
+                throw activityError;
+            }
         }
-        const snapshot = await getDocs(query(collection(db, 'scores'), ...constraints));
-        snapshot.forEach((entry) => {
-            applyScoreDelta(entry.data() as ScoreLike, taskId, aliasMap, counters);
-        });
     } else {
+        const counters = new Map<string, number>();
         const cached = loadAttendedKeys(taskId);
         for (const rawKey of cached) {
             const canonicalKey = resolveCanonicalKey({ memberKey: rawKey }, aliasMap);
             if (!canonicalKey) continue;
             counters.set(canonicalKey, Math.max(1, counters.get(canonicalKey) ?? 0));
         }
+
+        const result = new Set<string>();
+        counters.forEach((net, key) => {
+            if (net > 0) result.add(key);
+        });
+        return result;
+    }
+};
+
+export const subscribeTodayAttendance = ({
+    taskId,
+    members,
+    stageId = null,
+    onResolved,
+    onError,
+}: SubscribeTodayAttendanceArgs) => {
+    if (!taskId || members.length === 0) {
+        onResolved(new Set());
+        return () => undefined;
     }
 
-    const pendingScores = await getUnsyncedScores();
-    for (const score of pendingScores) {
-        const scoreLike = score as PendingScore & ScoreLike;
-        if (stageId && scoreLike.stageId && scoreLike.stageId !== stageId) continue;
-        applyScoreDelta(scoreLike, taskId, aliasMap, counters);
-    }
+    const aliasMap = buildAliasMap(members);
+    let fallbackUnsubscribe: (() => void) | null = null;
 
-    const result = new Set<string>();
-    counters.forEach((net, key) => {
-        if (net > 0) result.add(key);
-    });
-    return result;
+    const subscribeScoresFallback = () => {
+        if (fallbackUnsubscribe) return;
+        const constraints = buildTodayConstraints();
+        if (stageId) {
+            constraints.push(where('stageId', '==', stageId));
+        }
+        fallbackUnsubscribe = onSnapshot(
+            query(collection(db, 'scores'), ...constraints),
+            (snapshot) => {
+                onResolved(resolveAttendanceFromDocs(snapshot.docs, taskId, aliasMap));
+            },
+            (error) => {
+                if (onError) onError(error);
+            }
+        );
+    };
+
+    const unsubscribe = onSnapshot(
+        query(collection(db, 'activities'), ...buildTodayConstraints()),
+        (snapshot) => {
+            onResolved(resolveAttendanceFromDocs(snapshot.docs, taskId, aliasMap));
+        },
+        (error) => {
+            subscribeScoresFallback();
+            if (onError) onError(error);
+        }
+    );
+
+    return () => {
+        unsubscribe();
+        if (fallbackUnsubscribe) fallbackUnsubscribe();
+    };
 };

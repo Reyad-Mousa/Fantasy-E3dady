@@ -159,7 +159,7 @@ service cloud.firestore {
     }
 
     match /scores/{scoreId} {
-      allow read: if isAuthenticated() && (isSuperAdmin() || ((isAdmin() || isLeader()) && isSameStage(resource.data.stageId)));
+      allow read: if true;
       allow create: if isAuthenticated() && (
         isSuperAdmin() ||
         ((isAdmin() || isLeader()) &&

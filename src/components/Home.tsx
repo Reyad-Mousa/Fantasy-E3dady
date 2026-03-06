@@ -3,19 +3,18 @@ import { collection, query, where, onSnapshot, limit } from 'firebase/firestore'
 import { db } from '@/services/firebase';
 import { useAuth } from '@/context/AuthContext';
 import { StatsCard } from './ui/SharedUI';
-import { Trophy, Users, ListTodo, BarChart3, Star, Target, Award, ArrowLeft, Medal, X } from 'lucide-react';
+import { Trophy, Users, ListTodo, BarChart3, Star, Target, Award, ArrowLeft, Medal, X, ChevronLeft } from 'lucide-react';
 import StageBadge from './StageBadge';
+import MemberScoreDetailsModal, { type MemberDetailsTarget } from './MemberScoreDetailsModal';
 import { motion, AnimatePresence } from 'motion/react';
 import { STAGES_LIST } from '@/config/stages';
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Cell, Tooltip } from 'recharts';
 import { usePerfProfile } from '@/hooks/usePerfProfile';
+import { buildMemberKey } from '@/services/memberKeys';
+import { mergeTeamMemberTotals } from '@/services/memberTotals';
 
 interface HomeProps {
   onNavigate?: (tab: string, taskId?: string) => void;
-}
-
-function normalizeMemberName(value: string): string {
-  return value.toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
 export default function Home({ onNavigate }: HomeProps) {
@@ -25,37 +24,29 @@ export default function Home({ onNavigate }: HomeProps) {
 
   // ── Raw Firestore state (updated by independent real-time listeners) ──────
   const [teamsData, setTeamsData] = useState<any[]>([]);
-  const [memberStatsByTeam, setMemberStatsByTeam] = useState<Record<string, number>>({});
   const [tasksCount, setTasksCount] = useState<number | null>(null);
   const [publicTasks, setPublicTasks] = useState<any[]>([]);
   const [massTasks, setMassTasks] = useState<any[]>([]);
 
   // ── Team detail modal ─────────────────────────────────────────────────────
   const [selectedTeam, setSelectedTeam] = useState<any | null>(null);
-  const [teamMembersStats, setTeamMembersStats] = useState<any[]>([]);
+  const [teamMembersStats, setTeamMembersStats] = useState<Array<{
+    name: string;
+    points: number;
+    memberKey?: string | null;
+    memberUserId?: string | null;
+    stageId?: string | null;
+  }>>([]);
   const [loadingMembers, setLoadingMembers] = useState(false);
+  const [memberDetails, setMemberDetails] = useState<MemberDetailsTarget | null>(null);
   const mobileChartContainerRef = useRef<HTMLDivElement | null>(null);
-  const [isMobileChartReady, setIsMobileChartReady] = useState(false);
+  const [mobileChartSize, setMobileChartSize] = useState({ width: 0, height: 0 });
   const selectedTeamLive = useMemo(() => {
     if (!selectedTeam) return null;
     return teamsData.find(t => t.id === selectedTeam.id) || selectedTeam;
   }, [teamsData, selectedTeam]);
 
-  // ── Listener 1: member_stats → summed by teamId ───────────────────────────
-  useEffect(() => {
-    const unsub = onSnapshot(collection(db, 'member_stats'), snap => {
-      const totals: Record<string, number> = {};
-      snap.docs.forEach(d => {
-        const data = d.data();
-        const tid = data.teamId as string | undefined;
-        if (tid) totals[tid] = (totals[tid] || 0) + (data.totalPoints || 0);
-      });
-      setMemberStatsByTeam(totals);
-    }, () => { });
-    return unsub;
-  }, []);
-
-  // ── Listener 2: teams (raw docs) ──────────────────────────────────────────
+  // ── Listener 1: teams (raw docs) ──────────────────────────────────────────
   useEffect(() => {
     const unsub = onSnapshot(collection(db, 'teams'), snap => {
       setTeamsData(snap.docs.map(d => ({ id: d.id, ...d.data() })));
@@ -63,7 +54,7 @@ export default function Home({ onNavigate }: HomeProps) {
     return unsub;
   }, []);
 
-  // ── Listener 3: active tasks count (logged-in users) ─────────────────────
+  // ── Listener 2: active tasks count (logged-in users) ─────────────────────
   useEffect(() => {
     if (!user) return;
     const unsub = onSnapshot(
@@ -73,7 +64,7 @@ export default function Home({ onNavigate }: HomeProps) {
     return unsub;
   }, [user]);
 
-  // ── Listener 4: active mass tasks (shortcut) ───────────────────────────
+  // ── Listener 3: active mass tasks (shortcut) ───────────────────────────
   useEffect(() => {
     if (!user) {
       setMassTasks([]);
@@ -93,7 +84,7 @@ export default function Home({ onNavigate }: HomeProps) {
     return unsub;
   }, [user]);
 
-  // ── Listener 5: public task previews (guests only) ───────────────────────
+  // ── Listener 4: public task previews (guests only) ───────────────────────
   useEffect(() => {
     if (user) return;
     const unsub = onSnapshot(
@@ -152,7 +143,7 @@ export default function Home({ onNavigate }: HomeProps) {
     }
 
     return fallback;
-  }, [user, teamsData, memberStatsByTeam, tasksCount]);
+  }, [user, teamsData, tasksCount]);
   const { isMobile, prefersLowMotion } = usePerfProfile();
   const animationsEnabled = !prefersLowMotion;
 
@@ -162,24 +153,27 @@ export default function Home({ onNavigate }: HomeProps) {
 
   useEffect(() => {
     if (!isMounted || !isMobile) {
-      setIsMobileChartReady(false);
+      setMobileChartSize({ width: 0, height: 0 });
       return;
     }
 
     const container = mobileChartContainerRef.current;
     if (!container) {
-      setIsMobileChartReady(false);
+      setMobileChartSize({ width: 0, height: 0 });
       return;
     }
 
-    const updateReady = () => {
+    const updateSize = () => {
       const { width, height } = container.getBoundingClientRect();
-      setIsMobileChartReady(width > 0 && height > 0);
+      setMobileChartSize({
+        width: width > 0 ? Math.floor(width) : 0,
+        height: height > 0 ? Math.floor(height) : 0,
+      });
     };
 
-    updateReady();
-    const rafId = window.requestAnimationFrame(updateReady);
-    const resizeObserver = new ResizeObserver(updateReady);
+    updateSize();
+    const rafId = window.requestAnimationFrame(updateSize);
+    const resizeObserver = new ResizeObserver(updateSize);
     resizeObserver.observe(container);
 
     return () => {
@@ -197,56 +191,43 @@ export default function Home({ onNavigate }: HomeProps) {
     setLoadingMembers(true);
     const unsub = onSnapshot(
       query(collection(db, 'member_stats'), where('teamId', '==', selectedTeamLive.id)),
-      (statsSnap) => {
-        const statsByName = new Map<string, { name: string; points: number }>();
-        statsSnap.docs.forEach((docSnap) => {
-          const stat = docSnap.data() as any;
-          const rawName = String(stat.memberName || '').trim();
-          const normalized = normalizeMemberName(rawName);
-          if (!normalized) return;
-          const points = Number(stat.totalPoints || 0);
-          const existing = statsByName.get(normalized);
-          if (existing) {
-            existing.points += Number.isFinite(points) ? points : 0;
-          } else {
-            statsByName.set(normalized, {
-              name: rawName || 'غير معروف',
-              points: Number.isFinite(points) ? points : 0,
-            });
-          }
-        });
+      (memberStatsSnap) => {
+        const merged = mergeTeamMemberTotals({
+          teamId: selectedTeamLive.id,
+          teamMembers: selectedTeamLive.members || [],
+          entries: memberStatsSnap.docs.map((docSnap) => docSnap.data()),
+          resolveStageId: (teamId) => teamsData.find((team) => team.id === teamId)?.stageId || null,
+        }).map((member) => ({
+          name: member.memberName,
+          points: Math.round(Number(member.totalPoints || 0)),
+          memberKey: member.memberKey || null,
+          memberUserId: member.memberUserId || null,
+          stageId: member.stageId || null,
+        }));
 
-        const seen = new Set<string>();
-        const merged: { name: string; points: number }[] = [];
-
-        for (const memberName of (selectedTeamLive.members || [])) {
-          const name = String(memberName || '').trim();
-          const normalized = normalizeMemberName(name);
-          if (!normalized || seen.has(normalized)) continue;
-          seen.add(normalized);
-          const stat = statsByName.get(normalized);
-          merged.push({ name, points: Math.round(stat?.points || 0) });
-        }
-
-        for (const [normalized, stat] of statsByName.entries()) {
-          if (seen.has(normalized)) continue;
-          seen.add(normalized);
-          merged.push({ name: stat.name, points: Math.round(stat.points || 0) });
-        }
-
-        merged.sort((a, b) => b.points - a.points);
         setTeamMembersStats(merged);
         setLoadingMembers(false);
       },
       () => {
-        const fallback = (selectedTeamLive.members || []).map((name: string) => ({ name, points: 0 }));
+        const fallback = mergeTeamMemberTotals({
+          teamId: selectedTeamLive.id,
+          teamMembers: selectedTeamLive.members || [],
+          entries: [],
+          resolveStageId: (teamId) => teamsData.find((team) => team.id === teamId)?.stageId || null,
+        }).map((member) => ({
+          name: member.memberName,
+          points: 0,
+          memberKey: member.memberKey || null,
+          memberUserId: member.memberUserId || null,
+          stageId: member.stageId || null,
+        }));
         setTeamMembersStats(fallback);
         setLoadingMembers(false);
       }
     );
 
     return unsub;
-  }, [selectedTeamLive]);
+  }, [selectedTeamLive, teamsData]);
 
 
   const navigate = (tab: string, taskId?: string) => {
@@ -365,47 +346,47 @@ export default function Home({ onNavigate }: HomeProps) {
                 style={{ minWidth: 10, minHeight: 240 }}
                 dir="ltr"
               >
-                {isMounted && isMobileChartReady && (
-                  <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0} debounce={1}>
-                    <BarChart
-                      data={mobileChartData}
-                      margin={{ top: 8, bottom: 2 }}
+                {isMounted && mobileChartSize.width > 0 && mobileChartSize.height > 0 && (
+                  <BarChart
+                    width={mobileChartSize.width}
+                    height={mobileChartSize.height}
+                    data={mobileChartData}
+                    margin={{ top: 8, bottom: 2 }}
+                  >
+                    <XAxis
+                      dataKey="shortName"
+                      axisLine={false}
+                      tickLine={false}
+                      tick={{ fill: '#94a3b8', fontSize: 11, fontWeight: 'bold' }}
+                      dy={8}
+                    />
+                    <YAxis hide />
+                    <Tooltip
+                      cursor={{ fill: 'rgba(255,255,255,0.03)' }}
+                      formatter={(value: any, _name, payload: any) => [
+                        `${Number(value) || 0} نقطة`,
+                        `${payload?.payload?.name ?? 'المرحلة'}`,
+                      ]}
+                      contentStyle={{
+                        backgroundColor: '#1e1b4b',
+                        borderRadius: '12px',
+                        border: '1px solid rgba(255,255,255,0.1)',
+                        boxShadow: '0 10px 30px rgba(0,0,0,0.35)',
+                        fontSize: '12px',
+                      }}
+                      itemStyle={{ color: '#fff', fontWeight: 'bold' }}
+                    />
+                    <Bar
+                      dataKey="points"
+                      radius={[10, 10, 0, 0]}
+                      barSize={32}
+                      isAnimationActive={!prefersLowMotion}
                     >
-                      <XAxis
-                        dataKey="shortName"
-                        axisLine={false}
-                        tickLine={false}
-                        tick={{ fill: '#94a3b8', fontSize: 11, fontWeight: 'bold' }}
-                        dy={8}
-                      />
-                      <YAxis hide />
-                      <Tooltip
-                        cursor={{ fill: 'rgba(255,255,255,0.03)' }}
-                        formatter={(value: any, _name, payload: any) => [
-                          `${Number(value) || 0} نقطة`,
-                          `${payload?.payload?.name ?? 'المرحلة'}`,
-                        ]}
-                        contentStyle={{
-                          backgroundColor: '#1e1b4b',
-                          borderRadius: '12px',
-                          border: '1px solid rgba(255,255,255,0.1)',
-                          boxShadow: '0 10px 30px rgba(0,0,0,0.35)',
-                          fontSize: '12px',
-                        }}
-                        itemStyle={{ color: '#fff', fontWeight: 'bold' }}
-                      />
-                      <Bar
-                        dataKey="points"
-                        radius={[10, 10, 0, 0]}
-                        barSize={32}
-                        isAnimationActive={!prefersLowMotion}
-                      >
-                        {mobileChartData.map((entry, index) => (
-                          <Cell key={`mobile-cell-${index}`} fill={entry.color} />
-                        ))}
-                      </Bar>
-                    </BarChart>
-                  </ResponsiveContainer>
+                      {mobileChartData.map((entry, index) => (
+                        <Cell key={`mobile-cell-${index}`} fill={entry.color} />
+                      ))}
+                    </Bar>
+                  </BarChart>
                 )}
               </div>
               <div className="mt-3 grid grid-cols-3 gap-2 border-t border-white/5 pt-3" dir="ltr">
@@ -518,6 +499,10 @@ export default function Home({ onNavigate }: HomeProps) {
                             </div>
                             <div className="flex-1 min-w-0">
                               <h4 className="text-sm font-bold text-text-primary truncate transition-colors group-hover:text-white">{team.name}</h4>
+                              <span className="mt-1 inline-flex items-center gap-1 rounded-full border border-accent/15 bg-accent/10 px-2 py-0.5 text-[10px] font-bold text-accent/90 transition-colors group-hover:border-accent/35 group-hover:bg-accent/15">
+                                اضغط لعرض الفريق
+                                <ChevronLeft className="w-3 h-3" />
+                              </span>
                             </div>
                             <div className="text-right flex flex-col items-end justify-center">
                               <div className="flex items-center gap-1.5 opacity-80 group-hover:opacity-100 transition-opacity">
@@ -656,7 +641,32 @@ export default function Home({ onNavigate }: HomeProps) {
                           {i === 0 ? <Trophy className="w-4 h-4" /> : i === 1 || i === 2 ? <Medal className="w-4 h-4" /> : i + 1}
                         </div>
                         <div className="flex-1 min-w-0">
-                          <span className="font-bold text-text-primary text-sm truncate block">{member.name}</span>
+                          <button
+                            type="button"
+                            onClick={() => setMemberDetails({
+                              memberKey: member.memberKey || buildMemberKey({
+                                memberUserId: member.memberUserId || undefined,
+                                teamId: selectedTeamLive.id,
+                                memberName: member.name,
+                              }),
+                              memberUserId: member.memberUserId || null,
+                              memberName: member.name,
+                              name: member.name,
+                              teamId: selectedTeamLive.id,
+                              teamName: selectedTeamLive.name,
+                              stageId: member.stageId || selectedTeamLive.stageId || null,
+                              totalPoints: member.points,
+                            })}
+                            className="group text-right max-w-full"
+                          >
+                            <span className="font-bold text-text-primary text-sm truncate block group-hover:text-primary-light transition-colors">
+                              {member.name}
+                            </span>
+                            <span className="mt-1 inline-flex items-center gap-1 rounded-full border border-primary/20 bg-primary/10 px-2 py-0.5 text-[10px] font-bold text-primary-light/85 transition-colors group-hover:border-primary/40 group-hover:bg-primary/15">
+                              اضغط لعرض البيانات
+                              <ChevronLeft className="w-3 h-3" />
+                            </span>
+                          </button>
                         </div>
                         <div className="text-right shrink-0 flex flex-col items-end">
                           <span className="text-sm font-black text-white flex items-center gap-1 px-2 py-0.5 bg-white/5 rounded-md border border-white/5">
@@ -688,6 +698,14 @@ export default function Home({ onNavigate }: HomeProps) {
           </div>
         )}
       </AnimatePresence>
+
+      <MemberScoreDetailsModal
+        member={memberDetails}
+        onClose={() => setMemberDetails(null)}
+        stageScope={user?.role === 'super_admin'
+          ? null
+          : (user?.stageId || memberDetails?.stageId || selectedTeamLive?.stageId || null)}
+      />
 
     </div >
   );

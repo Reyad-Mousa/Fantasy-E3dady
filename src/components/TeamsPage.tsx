@@ -5,8 +5,10 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Plus, Edit3, Trash2, X, Users, Trophy, UserPlus, UserMinus } from 'lucide-react';
 import StageBadge from './StageBadge';
 import StageFilterBar, { FilterValue } from './StageFilterBar';
+import MemberScoreDetailsModal, { type MemberDetailsTarget } from './MemberScoreDetailsModal';
 import { STAGES_LIST } from '@/config/stages';
 import { useTeamsData, type TeamData } from '@/hooks/useTeamsData';
+import { buildMemberKey } from '@/services/memberKeys';
 
 export default function TeamsPage({ onBack }: { onBack?: () => void }) {
     const { user } = useAuth();
@@ -27,6 +29,7 @@ export default function TeamsPage({ onBack }: { onBack?: () => void }) {
     const [addingMemberTo, setAddingMemberTo] = useState<TeamData | null>(null);
     const [newMemberName, setNewMemberName] = useState('');
     const [removeMemberConfirm, setRemoveMemberConfirm] = useState<{ team: TeamData, memberName: string } | null>(null);
+    const [memberDetails, setMemberDetails] = useState<MemberDetailsTarget | null>(null);
 
     const canCreateTeam = !!user && canCreateTeams(user.role);
     const canManageTeamDetails = !!user && ['super_admin', 'admin', 'leader'].includes(user.role);
@@ -217,7 +220,20 @@ export default function TeamsPage({ onBack }: { onBack?: () => void }) {
                                                 <div className="w-6 h-6 rounded-full bg-primary/20 flex items-center justify-center text-[10px] font-bold text-primary">
                                                     {(member || '؟').charAt(0)}
                                                 </div>
-                                                <span className="text-sm text-text-primary">{member}</span>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setMemberDetails({
+                                                        memberKey: buildMemberKey({ teamId: team.id, memberName: member }),
+                                                        memberName: member,
+                                                        name: member,
+                                                        teamId: team.id,
+                                                        teamName: team.name,
+                                                        stageId: team.stageId || null,
+                                                    })}
+                                                    className="text-sm text-text-primary hover:text-primary-light transition-colors"
+                                                >
+                                                    {member}
+                                                </button>
                                             </div>
                                             {canManageTeamDetails && (
                                                 <button
@@ -360,7 +376,20 @@ export default function TeamsPage({ onBack }: { onBack?: () => void }) {
                                                     <div className="w-7 h-7 rounded-full bg-primary/20 flex items-center justify-center text-xs font-bold text-primary">
                                                         {(member || '؟').charAt(0)}
                                                     </div>
-                                                    <span className="text-sm text-text-primary font-bold">{member}</span>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setMemberDetails({
+                                                            memberKey: buildMemberKey({ teamId: addingMemberTo.id, memberName: member }),
+                                                            memberName: member,
+                                                            name: member,
+                                                            teamId: addingMemberTo.id,
+                                                            teamName: addingMemberTo.name,
+                                                            stageId: addingMemberTo.stageId || null,
+                                                        })}
+                                                        className="text-sm text-text-primary font-bold hover:text-primary-light transition-colors"
+                                                    >
+                                                        {member}
+                                                    </button>
                                                 </div>
                                                 <button
                                                     onClick={() => setRemoveMemberConfirm({ team: addingMemberTo, memberName: member })}
@@ -401,6 +430,14 @@ export default function TeamsPage({ onBack }: { onBack?: () => void }) {
                 onCancel={() => setRemoveMemberConfirm(null)}
                 confirmText="إزالة"
                 variant="danger"
+            />
+
+            <MemberScoreDetailsModal
+                member={memberDetails}
+                onClose={() => setMemberDetails(null)}
+                stageScope={user?.role === 'super_admin'
+                    ? (stageFilter === 'all' ? null : stageFilter)
+                    : (user?.stageId || memberDetails?.stageId || null)}
             />
         </div>
     );

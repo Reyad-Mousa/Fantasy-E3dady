@@ -3,8 +3,10 @@ import { collection, onSnapshot, doc, setDoc, deleteDoc, updateDoc, query, where
 import { db } from '@/services/firebase';
 import { useAuth, canManageMembers, canManageAllTeams } from '@/context/AuthContext';
 import { useToast, SectionHeader, EmptyState, ConfirmModal } from './ui/SharedUI';
+import MemberScoreDetailsModal, { type MemberDetailsTarget } from './MemberScoreDetailsModal';
 import { motion, AnimatePresence } from 'motion/react';
 import { Users, Plus, Edit3, Trash2, X, Search, UserPlus, Mail, Shield } from 'lucide-react';
+import { buildMemberKey } from '@/services/memberKeys';
 
 interface Member {
     id: string;
@@ -19,6 +21,7 @@ interface Team {
     name: string;
     leaderId: string;
     memberCount: number;
+    stageId?: string | null;
 }
 
 export default function MembersPage({ onBack }: { onBack?: () => void }) {
@@ -32,6 +35,7 @@ export default function MembersPage({ onBack }: { onBack?: () => void }) {
     const [showAddModal, setShowAddModal] = useState(false);
     const [editingMember, setEditingMember] = useState<Member | null>(null);
     const [deleteConfirm, setDeleteConfirm] = useState<Member | null>(null);
+    const [memberDetails, setMemberDetails] = useState<MemberDetailsTarget | null>(null);
 
     // Form state
     const [formName, setFormName] = useState('');
@@ -138,6 +142,11 @@ export default function MembersPage({ onBack }: { onBack?: () => void }) {
         return teams.find(t => t.id === teamId)?.name || 'غير معروف';
     };
 
+    const getTeamStageId = (teamId: string | null) => {
+        if (!teamId) return null;
+        return teams.find(t => t.id === teamId)?.stageId || null;
+    };
+
     const getRoleBadge = (role: string) => {
         const map: Record<string, { label: string; class: string }> = {
             super_admin: { label: 'مشرف عام', class: 'badge-pending' },
@@ -229,7 +238,25 @@ export default function MembersPage({ onBack }: { onBack?: () => void }) {
                                     {/* Info */}
                                     <div className="flex-1 min-w-0">
                                         <div className="flex items-center gap-2 mb-0.5">
-                                            <h4 className="font-bold text-text-primary text-sm truncate">{member.name}</h4>
+                                            {member.role === 'member' ? (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setMemberDetails({
+                                                        memberKey: buildMemberKey({ memberUserId: member.id, teamId: member.teamId || undefined, memberName: member.name }),
+                                                        memberUserId: member.id,
+                                                        memberName: member.name,
+                                                        name: member.name,
+                                                        teamId: member.teamId || '',
+                                                        teamName: getTeamName(member.teamId),
+                                                        stageId: getTeamStageId(member.teamId),
+                                                    })}
+                                                    className="font-bold text-text-primary text-sm truncate hover:text-primary-light transition-colors"
+                                                >
+                                                    {member.name}
+                                                </button>
+                                            ) : (
+                                                <h4 className="font-bold text-text-primary text-sm truncate">{member.name}</h4>
+                                            )}
                                             <span className={`badge text-[10px] ${roleBadge.class}`}>{roleBadge.label}</span>
                                         </div>
                                         <div className="flex items-center gap-3 text-text-muted text-xs">
@@ -350,6 +377,14 @@ export default function MembersPage({ onBack }: { onBack?: () => void }) {
                 onCancel={() => setDeleteConfirm(null)}
                 confirmText="حذف"
                 variant="danger"
+            />
+
+            <MemberScoreDetailsModal
+                member={memberDetails}
+                onClose={() => setMemberDetails(null)}
+                stageScope={user.role === 'super_admin'
+                    ? null
+                    : (user.stageId || memberDetails?.stageId || null)}
             />
         </div>
     );

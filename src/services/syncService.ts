@@ -130,6 +130,7 @@ export async function syncPendingScores(): Promise<number> {
                 scoreType: score.type as 'earn' | 'deduct',
                 targetType: (score.targetType ?? 'team') as 'team' | 'member',
                 memberKey: score.memberKey ?? null,
+                memberUserId: score.memberUserId ?? null,
                 memberName: score.memberName ?? null,
                 customNote: score.customNote ?? null,
                 stageId: stageId,
