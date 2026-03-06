@@ -14,6 +14,7 @@ import StageFilterBar, { FilterValue } from './StageFilterBar';
 import StageBadge from './StageBadge';
 import { STAGES_LIST, StageId } from '@/config/stages';
 import { logActivity } from '@/services/activityLogger';
+import { buildMemberKey, normalizeMemberName } from '@/services/memberKeys';
 
 interface TeamData {
     id: string;
@@ -362,6 +363,9 @@ export default function SuperAdminPanel({ onBack }: { onBack?: () => void }) {
                         // Map of member keys to their info
                         const membersToAdd = new Map<string, { name?: string; uid?: string | null; stageId?: StageId | null }>();
 
+                        // Track normalized user names so team list members that already
+                        // have a user account are not double-counted
+                        const userNormalizedNames = new Set<string>();
                         teamUserMembers.forEach(u => {
                             const userName = asNonEmptyString(u.name);
                             if (!userName) return;
@@ -370,16 +374,20 @@ export default function SuperAdminPanel({ onBack }: { onBack?: () => void }) {
                                 uid: u.id,
                                 stageId: normalizeStageId(u.stageId) || teamStageId,
                             });
+                            userNormalizedNames.add(normalizeMemberName(userName));
                         });
-                        teamMemberNames.forEach((name: string) => {
-                            if (name) {
-                                const normalized = name.trim().toLowerCase();
-                                membersToAdd.set(`m:${teamId}_${normalized}`, {
-                                    name: name.trim(),
-                                    uid: null,
-                                    stageId: teamStageId,
-                                });
-                            }
+                        teamMemberNames.forEach((rawName: string) => {
+                            const name = (rawName || '').trim();
+                            if (!name) return;
+                            // Skip if this name already has a user account
+                            if (userNormalizedNames.has(normalizeMemberName(name))) return;
+                            const mKey = buildMemberKey({ teamId, memberName: name });
+                            if (!mKey) return;
+                            membersToAdd.set(mKey, {
+                                name,
+                                uid: null,
+                                stageId: teamStageId,
+                            });
                         });
 
                         if (membersToAdd.size > 0) {

@@ -24,6 +24,7 @@ export interface MemberScoreHistoryTarget {
     memberName: string;
     teamId: string;
     stageId?: string | null;
+    totalPoints?: number | null;
 }
 
 export interface MemberScoreHistoryItem {
@@ -52,6 +53,8 @@ interface MemberStatDocLike {
     memberName?: string | null;
     memberKey?: string | null;
     memberUserId?: string | null;
+    totalPoints?: number | null;
+    updatedAt?: unknown;
 }
 
 const asTrimmedString = (value: unknown): string | null => {
@@ -265,7 +268,7 @@ export async function getMemberScoreHistory({
     target,
     stageId = null,
     online,
-    maxItems = 20,
+    maxItems = 50,
 }: GetMemberScoreHistoryArgs): Promise<MemberScoreHistoryItem[]> {
     const resolvedTarget = online
         ? await resolveTargetFromMemberStats(target, buildMemberKeyAliases(target))
@@ -347,9 +350,106 @@ export async function getMemberScoreHistory({
         online
     );
 
-    return stageFiltered
+    const history = stageFiltered
         .map(([id, score]) => toHistoryItem(id, score, taskTitles, score.pending))
-        .filter((item): item is MemberScoreHistoryItem => item !== null)
+        .filter((item): item is MemberScoreHistoryItem => item !== null);
+
+    // ── Include team-level scores that have no individual member entries ──
+    const teamId = asTrimmedString(resolvedTarget.teamId);
+    if (online && teamId) {
+        try {
+            // Get current member count for per-member share calculation
+            // Deduplicate member_stats entries: a person may have multiple keys
+            // (e.g. u:userId AND m:teamId_name or n:teamId:name) for the same member
+            const memberStatsSnap = await getDocs(
+                query(collection(db, 'member_stats'), where('teamId', '==', teamId))
+            );
+            const uniqueMemberNames = new Set<string>();
+            memberStatsSnap.forEach((entry) => {
+                const data = entry.data();
+                const name = typeof data.memberName === 'string' ? data.memberName.trim().toLowerCase() : '';
+                if (name) uniqueMemberNames.add(name);
+                else uniqueMemberNames.add(entry.id); // fallback to doc ID if no name
+            });
+            const memberCount = Math.max(1, uniqueMemberNames.size);
+
+            // Fetch all scores for this team
+            const teamScoreSnap = await getDocs(
+                query(collection(db, 'scores'), where('teamId', '==', teamId))
+            );
+
+            // Build set of taskIds already covered by individual member scores
+            const coveredTaskIds = new Set<string>();
+            history.forEach(item => {
+                if (item.taskId) coveredTaskIds.add(item.taskId);
+            });
+
+            // Also track which raw score doc IDs we already have as member scores
+            const coveredDocIds = new Set<string>(
+                stageFiltered.map(([id]) => id)
+            );
+
+            // Collect team scores that don't overlap with existing member scores
+            const teamScores: Array<{ id: string; score: ScoreDocLike }> = [];
+            const extraTaskIds: string[] = [];
+
+            teamScoreSnap.forEach((entry) => {
+                // Skip if we already have this exact document as a member score
+                if (coveredDocIds.has(entry.id)) return;
+
+                const score = entry.data() as ScoreDocLike;
+                const targetType = asTrimmedString(score.targetType);
+
+                // Skip explicit member scores — these are handled individually
+                if (targetType === 'member') return;
+
+                // For scores without targetType, skip if they have explicit
+                // member identity (they belong to specific individual members)
+                if (!targetType && hasExplicitMemberIdentity(score)) return;
+
+                const scoreTaskId = typeof score.taskId === 'string' ? score.taskId : null;
+                if (scoreTaskId && coveredTaskIds.has(scoreTaskId)) return;
+
+                teamScores.push({ id: entry.id, score });
+                if (scoreTaskId && !taskTitles.has(scoreTaskId)) extraTaskIds.push(scoreTaskId);
+            });
+
+            // Resolve missing task titles for team scores
+            if (extraTaskIds.length > 0) {
+                const extraTitles = await toTaskTitleMap(extraTaskIds, online);
+                extraTitles.forEach((title, tid) => taskTitles.set(tid, title));
+            }
+
+            // Add team scores as per-member entries
+            for (const { id, score } of teamScores) {
+                const type = score.type === 'deduct' ? 'deduct' : 'earn';
+                const fullPoints = Math.abs(Number(score.points || 0));
+                const perMemberPoints = Math.round(fullPoints / memberCount);
+                if (perMemberPoints <= 0) continue;
+
+                const scoreTaskId = typeof score.taskId === 'string' ? score.taskId : null;
+                const title = (scoreTaskId ? taskTitles.get(scoreTaskId) : null)
+                    || score.customNote || 'مهمة جماعية';
+
+                history.push({
+                    id: `team-${id}`,
+                    taskId: scoreTaskId,
+                    taskTitle: title,
+                    points: perMemberPoints,
+                    type,
+                    actorName: typeof score.registeredByName === 'string' ? score.registeredByName : null,
+                    customNote: typeof score.customNote === 'string' ? score.customNote : null,
+                    stageId: typeof score.stageId === 'string' ? score.stageId : null,
+                    timestamp: score.timestamp ?? null,
+                    pending: false,
+                });
+            }
+        } catch {
+            // Silently ignore team score lookup failures
+        }
+    }
+
+    return history
         .sort(sortByNewest)
         .slice(0, maxItems);
 }

@@ -437,7 +437,7 @@ export default function TasksPage({ onBack, initialTaskId }: { onBack?: () => vo
                         await updateDoc(doc(db, 'teams', member.teamId), {
                             totalPoints: increment(teamBonus),
                         });
-                        // Log bonus score doc
+                        // Log bonus score doc (team-level)
                         await addDoc(collection(db, 'scores'), {
                             teamId: member.teamId,
                             taskId: attendanceTask.id,
@@ -473,7 +473,47 @@ export default function TasksPage({ onBack, initialTaskId }: { onBack?: () => vo
                             actorName: user.name,
                             actorRole: user.role,
                         });
-                        showToast(`🎉 كل فريق "${bonusTeamName}" حضر! +${teamBonus} نقطة للمجموعة`, 'success');
+
+                        // Distribute team bonus evenly to each member's stats
+                        const perMemberShare = teamBonus / teamMembers.length;
+                        await Promise.allSettled(
+                            teamMembers.map(async (tm) => {
+                                const tmStageId = tm.stageId || user.stageId || null;
+                                // Individual score record (applyToTeamTotal: false to avoid double-counting)
+                                await addDoc(collection(db, 'scores'), {
+                                    teamId: tm.teamId,
+                                    taskId: attendanceTask.id,
+                                    points: perMemberShare,
+                                    type: 'earn',
+                                    targetType: 'member',
+                                    source: 'team',
+                                    registeredBy: user.uid,
+                                    registeredByName: user.name,
+                                    stageId: tmStageId,
+                                    memberKey: tm.key,
+                                    memberUserId: tm.userId,
+                                    memberName: tm.name,
+                                    applyToTeamTotal: false,
+                                    customNote: 'حصة من مكافأة حضور كامل الفريق',
+                                    pendingSync: false,
+                                    timestamp: serverTimestamp(),
+                                    syncedAt: serverTimestamp(),
+                                });
+                                // Update member_stats
+                                await setDoc(doc(db, 'member_stats', tm.key), {
+                                    memberKey: tm.key,
+                                    memberUserId: tm.userId,
+                                    memberName: tm.name,
+                                    teamId: tm.teamId,
+                                    stageId: tmStageId,
+                                    totalPoints: increment(perMemberShare),
+                                    updatedAt: serverTimestamp(),
+                                }, { merge: true });
+                            })
+                        );
+
+                        const roundedShare = Math.round(perMemberShare);
+                        showToast(`🎉 كل فريق "${bonusTeamName}" حضر! +${teamBonus} نقطة (${roundedShare} لكل فرد)`, 'success');
                     } else {
                         await addPendingScore({
                             teamId: member.teamId,
