@@ -90,13 +90,6 @@ service cloud.firestore {
         (userData.teamId is string && teamExists(userData.teamId) && isSameStage(getTeamStage(userData.teamId)));
     }
 
-    function leaderOnlyUpdatesTeamPoints() {
-      // Kept for backward compatibility if needed, but not actively restricting teams anymore.
-      return request.resource.data.diff(resource.data).changedKeys().hasOnly(['totalPoints']) &&
-        request.resource.data.totalPoints is number &&
-        isSameStage(resource.data.stageId) &&
-        isSameStage(request.resource.data.stageId);
-    }
 
     function isValidAuditOperation(operation) {
       return operation == 'create' || operation == 'delete';
