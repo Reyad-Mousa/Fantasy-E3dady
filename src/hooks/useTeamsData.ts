@@ -1,7 +1,14 @@
 import { useState, useEffect } from 'react';
-import { collection, onSnapshot, doc, setDoc, updateDoc, deleteDoc, serverTimestamp, arrayUnion, arrayRemove, query, where, addDoc } from 'firebase/firestore';
+import { collection, onSnapshot, query, where } from 'firebase/firestore';
 import { db } from '@/services/firebase';
-import { logActivity } from '@/services/activityLogger';
+import {
+    createTeam,
+    updateTeam,
+    deleteTeam as deleteTeamService,
+    addTeamMember,
+    removeTeamMember,
+    createAuditLog,
+} from '@/services/teamsService';
 
 export interface TeamData {
     id: string;
@@ -30,56 +37,8 @@ export function useTeamsData(user: any, showToast: (msg: string, type?: 'success
         return unsub;
     }, [user]);
 
-    const createAuditLog = async ({
-        operation,
-        entityType,
-        entityId,
-        entityName,
-        stageId,
-        details,
-    }: {
-        operation: 'create' | 'delete' | 'update';
-        entityType: 'team' | 'task' | 'member';
-        entityId: string;
-        entityName: string;
-        stageId?: string | null;
-        details?: string | null;
-    }) => {
-        if (!user) return;
-        const normalizedStageId = (stageId && stageId.trim()) || (user.stageId && user.stageId.trim()) || null;
-
-        try {
-            await addDoc(collection(db, 'logs'), {
-                kind: 'audit',
-                operation,
-                entityType,
-                entityId,
-                entityName: entityName.trim() || 'غير معروف',
-                stageId: normalizedStageId,
-                actorId: user.uid,
-                actorName: user.name || null,
-                actorEmail: user.email || null,
-                actorRole: user.role || null,
-                details: details || null,
-                timestamp: serverTimestamp(),
-                source: 'client',
-            });
-            // Mirror to dedicated activities collection
-            logActivity({
-                kind: 'audit',
-                operation,
-                entityType,
-                entityId,
-                entityName: entityName.trim() || 'غير معروف',
-                stageId: normalizedStageId,
-                actorId: user.uid,
-                actorName: user.name || null,
-                actorRole: user.role || null,
-                details: details || null,
-            });
-        } catch (err) {
-            console.warn('Failed to write audit log:', err);
-        }
+    const resolveStageId = (stageId?: string | null) => {
+        return (stageId && stageId.trim()) || (user.stageId && user.stageId.trim()) || null;
     };
 
     const saveTeam = async (
@@ -101,9 +60,11 @@ export function useTeamsData(user: any, showToast: (msg: string, type?: 'success
                 const oldName = editingTeam.name;
                 const newName = teamName.trim();
 
-                await updateDoc(doc(db, 'teams', editingTeam.id), {
+                await updateTeam({
+                    teamId: editingTeam.id,
                     name: newName,
-                    ...(user?.role === 'super_admin' && teamStageId && { stageId: teamStageId }),
+                    stageId: teamStageId,
+                    isSuperAdmin: user?.role === 'super_admin',
                 });
 
                 if (oldName !== newName) {
@@ -112,35 +73,39 @@ export function useTeamsData(user: any, showToast: (msg: string, type?: 'success
                         entityType: 'team',
                         entityId: editingTeam.id,
                         entityName: newName,
-                        stageId: editingTeam.stageId || user?.stageId || null,
+                        stageId: resolveStageId(editingTeam.stageId),
                         details: `الاسم السابق: ${oldName}`,
+                        actorId: user.uid,
+                        actorName: user.name || null,
+                        actorEmail: user.email || null,
+                        actorRole: user.role || null,
                     });
                 }
 
                 showToast('تم تحديث الفريق');
             } else {
-                const id = `team_${Date.now()}`;
                 let assignedStageId = user?.stageId || null;
                 if (user?.role === 'super_admin') {
                     assignedStageId = teamStageId || null;
                 }
 
-                await setDoc(doc(db, 'teams', id), {
-                    name: teamName.trim(),
-                    leaderId: user?.uid || '',
-                    totalPoints: 0,
-                    memberCount: 0,
-                    members: [],
-                    createdBy: user?.uid || '',
-                    createdAt: serverTimestamp(),
+                const id = await createTeam({
+                    name: teamName,
                     stageId: assignedStageId,
+                    createdBy: user?.uid || '',
+                    leaderId: user?.uid || '',
                 });
+
                 await createAuditLog({
                     operation: 'create',
                     entityType: 'team',
                     entityId: id,
                     entityName: teamName.trim(),
                     stageId: assignedStageId,
+                    actorId: user.uid,
+                    actorName: user.name || null,
+                    actorEmail: user.email || null,
+                    actorRole: user.role || null,
                 });
                 showToast(`تم إنشاء الفريق "${teamName.trim()}" بنجاح ✅`);
             }
@@ -157,13 +122,17 @@ export function useTeamsData(user: any, showToast: (msg: string, type?: 'success
     const deleteTeam = async (team: TeamData | null, onSuccess: () => void) => {
         if (!team) return;
         try {
-            await deleteDoc(doc(db, 'teams', team.id));
+            await deleteTeamService(team.id);
             await createAuditLog({
                 operation: 'delete',
                 entityType: 'team',
                 entityId: team.id,
                 entityName: team.name,
-                stageId: team.stageId || user?.stageId || null,
+                stageId: resolveStageId(team.stageId),
+                actorId: user.uid,
+                actorName: user.name || null,
+                actorEmail: user.email || null,
+                actorRole: user.role || null,
             });
             showToast(`تم حذف الفريق "${team.name}"`);
             onSuccess();
@@ -179,17 +148,18 @@ export function useTeamsData(user: any, showToast: (msg: string, type?: 'success
     ) => {
         if (!team || !memberName.trim()) return;
         try {
-            await updateDoc(doc(db, 'teams', team.id), {
-                members: arrayUnion(memberName.trim()),
-                memberCount: (team.members?.length || 0) + 1,
-            });
+            await addTeamMember(team.id, memberName, team.members?.length || 0);
             await createAuditLog({
                 operation: 'create',
                 entityType: 'member',
                 entityId: `${team.id}:${memberName.trim()}`,
                 entityName: memberName.trim(),
-                stageId: team.stageId || user?.stageId || null,
+                stageId: resolveStageId(team.stageId),
                 details: `داخل الفريق: ${team.name}`,
+                actorId: user.uid,
+                actorName: user.name || null,
+                actorEmail: user.email || null,
+                actorRole: user.role || null,
             });
             showToast(`تمت إضافة "${memberName.trim()}" إلى فريق "${team.name}"`);
 
@@ -211,17 +181,18 @@ export function useTeamsData(user: any, showToast: (msg: string, type?: 'success
     ) => {
         try {
             const updatedMembers = (team.members || []).filter(m => m !== memberName);
-            await updateDoc(doc(db, 'teams', team.id), {
-                members: arrayRemove(memberName),
-                memberCount: updatedMembers.length,
-            });
+            await removeTeamMember(team.id, memberName, updatedMembers.length);
             await createAuditLog({
                 operation: 'delete',
                 entityType: 'member',
                 entityId: `${team.id}:${memberName}`,
                 entityName: memberName,
-                stageId: team.stageId || user?.stageId || null,
+                stageId: resolveStageId(team.stageId),
                 details: `من الفريق: ${team.name}`,
+                actorId: user.uid,
+                actorName: user.name || null,
+                actorEmail: user.email || null,
+                actorRole: user.role || null,
             });
             showToast(`تم حذف العضو "${memberName}" من فريق "${team.name}"`);
 

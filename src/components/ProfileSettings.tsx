@@ -4,6 +4,7 @@ import { doc, setDoc } from 'firebase/firestore';
 import { auth, db } from '@/services/firebase';
 import { useAuth } from '@/context/AuthContext';
 import { useToast } from './ui/SharedUI';
+import { getRoleLabel } from '@/utils/helpers';
 import { motion, AnimatePresence } from 'motion/react';
 import { X, User, Lock, Save, Eye, EyeOff, CheckCircle, AlertCircle } from 'lucide-react';
 
@@ -103,15 +104,7 @@ export default function ProfileSettings({ isOpen, onClose }: ProfileSettingsProp
         }
     };
 
-    const getRoleLabel = (role: string) => {
-        const labels: Record<string, string> = {
-            super_admin: 'مشرف عام',
-            admin: 'مشرف',
-            leader: 'قائد',
-            member: 'عضو',
-        };
-        return labels[role] || role;
-    };
+    // getRoleLabel is imported from @/utils/helpers
 
     if (!user) return null;
 

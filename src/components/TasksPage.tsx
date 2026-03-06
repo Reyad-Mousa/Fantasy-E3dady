@@ -24,6 +24,8 @@ import {
     subscribeTodayAttendance,
 } from '@/services/attendanceResolver';
 import { buildMemberKey, normalizeMemberName } from '@/services/memberKeys';
+import { createAuditLog as createAuditLogService } from '@/services/teamsService';
+import { isPermissionDeniedError } from '@/utils/helpers';
 import { useOnlineStatus, useToast, EmptyState, SectionHeader } from './ui/SharedUI';
 import StageBadge from './StageBadge';
 import StageFilterBar, { type FilterValue } from './StageFilterBar';
@@ -73,14 +75,7 @@ interface AttendanceMember {
     stageId: string | null;
 }
 
-function isPermissionDeniedError(error: unknown): boolean {
-    return Boolean(
-        error &&
-        typeof error === 'object' &&
-        'code' in error &&
-        (error as { code?: unknown }).code === 'permission-denied'
-    );
-}
+// isPermissionDeniedError is imported from @/utils/helpers
 
 export default function TasksPage({ onBack, initialTaskId }: { onBack?: () => void, initialTaskId?: string | null }) {
     const { user } = useAuth();
@@ -590,38 +585,18 @@ export default function TasksPage({ onBack, initialTaskId }: { onBack?: () => vo
         details?: string | null
     ) => {
         if (!user) return;
-        const resolvedStageId = stageId || user.stageId || null;
-        try {
-            await addDoc(collection(db, 'logs'), {
-                kind: 'audit',
-                operation,
-                entityType: 'task',
-                entityId,
-                entityName: entityName || 'غير معروف',
-                stageId: resolvedStageId,
-                actorId: user.uid,
-                actorName: user.name || null,
-                actorEmail: user.email || null,
-                actorRole: user.role || null,
-                details: details || null,
-                timestamp: serverTimestamp(),
-            });
-            // Mirror to activities collection
-            logActivity({
-                kind: 'audit',
-                operation,
-                entityType: 'task',
-                entityId,
-                entityName: entityName || 'غير معروف',
-                stageId: resolvedStageId,
-                actorId: user.uid,
-                actorName: user.name || null,
-                actorRole: user.role || null,
-                details: details || null,
-            });
-        } catch (err) {
-            console.warn('Failed to log task activity:', err);
-        }
+        await createAuditLogService({
+            operation,
+            entityType: 'task',
+            entityId,
+            entityName: entityName || 'غير معروف',
+            stageId: stageId || user.stageId || null,
+            details,
+            actorId: user.uid,
+            actorName: user.name || null,
+            actorEmail: user.email || null,
+            actorRole: user.role || null,
+        });
     };
 
     const handleCreateTask = async (e: React.FormEvent) => {
@@ -895,8 +870,8 @@ export default function TasksPage({ onBack, initialTaskId }: { onBack?: () => vo
                                             {!online
                                                 ? 'لا توجد بيانات أعضاء محفوظة محليًا لهذه المرحلة بعد'
                                                 : user?.role === 'super_admin'
-                                                ? 'لا يوجد أعضاء في المرحلة المحددة'
-                                                : 'لا يوجد أعضاء في مرحلتك'}
+                                                    ? 'لا يوجد أعضاء في المرحلة المحددة'
+                                                    : 'لا يوجد أعضاء في مرحلتك'}
                                         </p>
                                     </div>
                                 ) : (
@@ -913,7 +888,7 @@ export default function TasksPage({ onBack, initialTaskId }: { onBack?: () => vo
                                                     }`}
                                             >
                                                 {/* Avatar */}
-                                    <div className={`w-9 h-9 rounded-xl flex items-center justify-center text-sm font-bold shrink-0 ${isAdded
+                                                <div className={`w-9 h-9 rounded-xl flex items-center justify-center text-sm font-bold shrink-0 ${isAdded
                                                     ? 'bg-green-500/20 text-green-400'
                                                     : 'bg-primary/20 text-primary-light'
                                                     }`}>

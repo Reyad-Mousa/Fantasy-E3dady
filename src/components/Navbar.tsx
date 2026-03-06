@@ -5,6 +5,7 @@ import { getPendingSyncCount } from '@/services/offlineDb';
 import ProfileSettings from './ProfileSettings';
 import StageBadge from './StageBadge';
 import { usePerfProfile } from '@/hooks/usePerfProfile';
+import { getRoleLabel, getRoleBadgeColor } from '@/utils/helpers';
 import {
   Trophy, Home, ListTodo, Users, Settings, BarChart3,
   LogOut, Menu, X, Wifi, WifiOff, ChevronDown, UserCog, User, Activity
@@ -35,25 +36,7 @@ const navItems: NavItem[] = [
   { id: 'admin', label: 'لوحة التحكم', icon: <Settings className="w-5 h-5" />, roles: ['super_admin'] },
 ];
 
-function getRoleLabel(role: Role): string {
-  const labels: Record<Role, string> = {
-    super_admin: 'مشرف عام',
-    admin: 'مشرف',
-    leader: 'قائد',
-    member: 'عضو',
-  };
-  return labels[role];
-}
-
-function getRoleBadgeColor(role: Role): string {
-  const colors: Record<Role, string> = {
-    super_admin: 'bg-accent/20 text-accent-light border-accent/30',
-    admin: 'bg-primary/20 text-primary-light border-primary/30',
-    leader: 'bg-success/20 text-success border-success/30',
-    member: 'bg-text-muted/20 text-text-secondary border-text-muted/30',
-  };
-  return colors[role];
-}
+// getRoleLabel and getRoleBadgeColor are now imported from @/utils/helpers
 
 export default function Navbar({ activeTab, setActiveTab, onLoginClick }: NavbarProps) {
   const { user, logout } = useAuth();

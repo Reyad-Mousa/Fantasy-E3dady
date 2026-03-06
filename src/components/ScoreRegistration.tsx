@@ -7,6 +7,7 @@ import { isOnline, syncPendingScores } from '@/services/syncService';
 import { logActivity } from '@/services/activityLogger';
 import { updateAttendanceCacheForMembers } from '@/services/attendanceCache';
 import { buildMemberKey, normalizeMemberName } from '@/services/memberKeys';
+import { toEventDate, isPermissionDeniedError } from '@/utils/helpers';
 import { SectionHeader, SyncBadge, useOnlineStatus, useToast } from './ui/SharedUI';
 import MemberScoreDetailsModal, { type MemberDetailsTarget } from './MemberScoreDetailsModal';
 import { motion, AnimatePresence } from 'motion/react';
@@ -67,25 +68,7 @@ interface MemberOption {
     source: 'user' | 'team_list';
 }
 
-function toEventDate(value: any): Date {
-    if (!value) return new Date(0);
-    if (typeof value?.toDate === 'function') return value.toDate();
-    if (typeof value === 'number') return new Date(value);
-    if (typeof value === 'string') {
-        const parsed = new Date(value);
-        return Number.isNaN(parsed.getTime()) ? new Date(0) : parsed;
-    }
-    return new Date(0);
-}
-
-function isPermissionDeniedError(error: unknown): boolean {
-    return Boolean(
-        error &&
-        typeof error === 'object' &&
-        'code' in error &&
-        (error as { code?: unknown }).code === 'permission-denied'
-    );
-}
+// toEventDate and isPermissionDeniedError are imported from @/utils/helpers
 
 export default function ScoreRegistration({ onBack }: { onBack?: () => void }) {
     const { user } = useAuth();

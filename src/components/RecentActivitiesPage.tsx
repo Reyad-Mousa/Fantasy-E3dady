@@ -11,6 +11,7 @@ import { formatDistanceToNow } from 'date-fns';
 import { ar } from 'date-fns/locale';
 import { useAuth } from '@/context/AuthContext';
 import { buildMemberKey } from '@/services/memberKeys';
+import { toEventDate } from '@/utils/helpers';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -55,16 +56,7 @@ interface GlobalStats {
     deleteCount: number;
 }
 
-function toEventDate(value: any): Date {
-    if (!value) return new Date(0);
-    if (typeof value?.toDate === 'function') return value.toDate();
-    if (typeof value === 'number') return new Date(value);
-    if (typeof value === 'string') {
-        const parsed = new Date(value);
-        return Number.isNaN(parsed.getTime()) ? new Date(0) : parsed;
-    }
-    return new Date(0);
-}
+// toEventDate is imported from @/utils/helpers
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
