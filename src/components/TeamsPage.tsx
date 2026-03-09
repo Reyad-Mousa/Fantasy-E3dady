@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useAuth, canCreateTeams, canExportReports } from '@/context/AuthContext';
 import { useToast, SectionHeader, EmptyState, ConfirmModal } from './ui/SharedUI';
 import { motion, AnimatePresence } from 'motion/react';
-import { Plus, Edit3, Trash2, X, Users, Trophy, UserPlus, UserMinus, ArrowLeftRight, Download } from 'lucide-react';
+import { Plus, Edit3, Trash2, X, Users, Trophy, UserPlus, UserMinus, ArrowLeftRight, Download, Upload } from 'lucide-react';
 import StageBadge from './StageBadge';
 import StageFilterBar, { FilterValue } from './StageFilterBar';
 import MemberScoreDetailsModal, { type MemberDetailsTarget } from './MemberScoreDetailsModal';
@@ -10,6 +10,8 @@ import { STAGES_LIST, STAGES } from '@/config/stages';
 import { useTeamsData, type TeamData } from '@/hooks/useTeamsData';
 import { buildMemberKey } from '@/services/memberKeys';
 import * as XLSX from 'xlsx-js-style';
+import { useExcelImport } from '@/hooks/useExcelImport';
+import ImportPreviewModal from './ImportPreviewModal';
 
 export default function TeamsPage({ onBack }: { onBack?: () => void }) {
     const { user } = useAuth();
@@ -39,6 +41,15 @@ export default function TeamsPage({ onBack }: { onBack?: () => void }) {
 
     const canCreateTeam = !!user && canCreateTeams(user.role);
     const canManageTeamDetails = !!user && ['super_admin', 'admin', 'leader'].includes(user.role);
+
+    // Excel import hook
+    const {
+        previewData: importPreviewData,
+        isImporting,
+        parseExcel,
+        confirmImport,
+        cancelImport
+    } = useExcelImport(user, teams, memberStats, showToast, () => { });
 
     // ──────────── Team CRUD ────────────
     const handleSaveTeam = async (e: React.FormEvent) => {
@@ -290,14 +301,37 @@ export default function TeamsPage({ onBack }: { onBack?: () => void }) {
                         <span className="text-text-primary bg-primary/20 text-primary-light border-primary/50 flex items-center justify-center w-6 h-6 rounded-full">{filteredTeams.length}</span>
                     </div>
                     {canExportReports(user.role) && (
-                        <button
-                            onClick={handleExportTeamsReport}
-                            className="btn btn-ghost text-sm w-full sm:w-auto justify-center"
-                            title="تصدير بيانات الفرق"
-                        >
-                            <Download className="w-4 h-4" />
-                            تصدير
-                        </button>
+                        <>
+                            <input
+                                type="file"
+                                id="excel-upload"
+                                accept=".xlsx, .xls"
+                                className="hidden"
+                                onChange={(e) => {
+                                    const file = e.target.files?.[0];
+                                    if (file) {
+                                        parseExcel(file, stageFilter);
+                                    }
+                                    e.target.value = '';
+                                }}
+                            />
+                            <label
+                                htmlFor="excel-upload"
+                                className="btn btn-ghost text-sm w-full sm:w-auto justify-center cursor-pointer"
+                                title="استيراد بيانات الفرق"
+                            >
+                                <Upload className="w-4 h-4" />
+                                استيراد
+                            </label>
+                            <button
+                                onClick={handleExportTeamsReport}
+                                className="btn btn-ghost text-sm w-full sm:w-auto justify-center"
+                                title="تصدير بيانات الفرق"
+                            >
+                                <Download className="w-4 h-4" />
+                                تصدير
+                            </button>
+                        </>
                     )}
                     {canCreateTeam && (
                         <button onClick={() => setShowTeamModal(true)} className="btn btn-primary text-sm w-full sm:w-auto justify-center">
@@ -708,6 +742,15 @@ export default function TeamsPage({ onBack }: { onBack?: () => void }) {
                     ? (stageFilter === 'all' ? null : stageFilter)
                     : (user?.stageId || memberDetails?.stageId || null)}
             />
+
+            {importPreviewData && (
+                <ImportPreviewModal
+                    data={importPreviewData}
+                    isImporting={isImporting}
+                    onConfirm={confirmImport}
+                    onCancel={cancelImport}
+                />
+            )}
         </div>
     );
 }
