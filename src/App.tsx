@@ -128,7 +128,7 @@ function AppContent() {
 
       <main
         key={activeTab}
-        className="flex-1 w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 animate-slide-up"
+        className="flex-1 w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-6 pb-24 lg:pb-8 animate-slide-up"
       >
         <Suspense fallback={<div className="text-center py-16"><div className="spinner mx-auto mb-4" /><p className="text-text-secondary font-bold text-sm">جاري التحميل...</p></div>}>
           {renderContent()}

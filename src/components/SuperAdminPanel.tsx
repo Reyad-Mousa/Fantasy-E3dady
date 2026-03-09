@@ -1,20 +1,22 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
-import { collection, onSnapshot, doc, setDoc, updateDoc, deleteDoc, serverTimestamp, query, orderBy, getDocs, where, writeBatch } from 'firebase/firestore';
+import { collection, onSnapshot, doc, setDoc, updateDoc, deleteDoc, serverTimestamp, query, orderBy, getDocs, writeBatch } from 'firebase/firestore';
 import { db } from '@/services/firebase';
-import { useAuth, canManageUsers, canExportReports } from '@/context/AuthContext';
-import { useToast, SectionHeader, StatsCard, EmptyState, ConfirmModal } from './ui/SharedUI';
+import { useAuth } from '@/context/AuthContext';
+import { useToast, SectionHeader, ConfirmModal } from './ui/SharedUI';
 import { motion, AnimatePresence } from 'motion/react';
-import {
-    Settings, Users, ListTodo, Trophy, BarChart3, FileSpreadsheet,
-    Plus, Upload, Download, Trash2, Edit3, X, Shield, UserPlus,
-    PieChart, Activity, AlertTriangle, RefreshCw
-} from 'lucide-react';
+import { PieChart, Trophy, Users, BarChart3, X } from 'lucide-react';
 import * as XLSX from 'xlsx';
-import StageFilterBar, { FilterValue } from './StageFilterBar';
+import StageFilterBar, { type FilterValue } from './StageFilterBar';
 import StageBadge from './StageBadge';
 import { STAGES_LIST, StageId } from '@/config/stages';
 import { logActivity } from '@/services/activityLogger';
 import { buildMemberKey, normalizeMemberName } from '@/services/memberKeys';
+
+// Required Sub-Components
+import AdminOverviewTab from './AdminOverviewTab';
+import AdminTeamsTab from './AdminTeamsTab';
+import AdminUsersTab from './AdminUsersTab';
+import AdminReportsTab from './AdminReportsTab';
 
 interface TeamData {
     id: string;
@@ -56,65 +58,83 @@ type AdminTab = 'overview' | 'teams' | 'users' | 'reports';
 export default function SuperAdminPanel({ onBack }: { onBack?: () => void }) {
     const { user } = useAuth();
     const { showToast } = useToast();
+    const [loading, setLoading] = useState(true);
     const [activeTab, setActiveTab] = useState<AdminTab>('overview');
     const [stageFilter, setStageFilter] = useState<FilterValue>('all');
+
+    // Data states
     const [teams, setTeams] = useState<TeamData[]>([]);
     const [users, setUsers] = useState<UserData[]>([]);
     const [scores, setScores] = useState<ScoreData[]>([]);
     const [tasks, setTasks] = useState<TaskData[]>([]);
-    const [loading, setLoading] = useState(true);
-    const [recalculating, setRecalculating] = useState(false);
-    // member_stats: teamId → total individual points
-    const [memberStatsByTeam, setMemberStatsByTeam] = useState<Record<string, number>>({});
 
-    // Team form
+    // Team Management
     const [showTeamModal, setShowTeamModal] = useState(false);
+    const [editingTeam, setEditingTeam] = useState<TeamData | null>(null);
     const [teamName, setTeamName] = useState('');
     const [teamLeader, setTeamLeader] = useState('');
-    const [teamStageId, setTeamStageId] = useState<string>('');
-    const [editingTeam, setEditingTeam] = useState<TeamData | null>(null);
+    const [teamStageId, setTeamStageId] = useState('');
     const [deleteTeamConfirm, setDeleteTeamConfirm] = useState<TeamData | null>(null);
-    const [showRecalculateConfirm, setShowRecalculateConfirm] = useState(false);
-    const [showClearLogsConfirm, setShowClearLogsConfirm] = useState(false);
-    const [clearingLogs, setClearingLogs] = useState(false);
 
+    // Advanced Actions
     const fileInputRef = useRef<HTMLInputElement>(null);
+    const [recalculating, setRecalculating] = useState(false);
+    const [showRecalculateConfirm, setShowRecalculateConfirm] = useState(false);
+
+    const [clearingLogs, setClearingLogs] = useState(false);
+    const [showClearLogsConfirm, setShowClearLogsConfirm] = useState(false);
+
+    const [memberStatsByTeam, setMemberStatsByTeam] = useState<Record<string, number>>({});
 
     useEffect(() => {
-        const teamsQuery = stageFilter === 'all'
-            ? collection(db, 'teams')
-            : query(collection(db, 'teams'), where('stageId', '==', stageFilter));
+        if (!user || user.role !== 'super_admin') return;
 
-        const unsub1 = onSnapshot(teamsQuery, snap => {
-            setTeams(snap.docs.map(d => ({ id: d.id, ...d.data() } as TeamData)));
-        });
-        const unsub2 = onSnapshot(collection(db, 'users'), snap => {
-            setUsers(snap.docs.map(d => ({ id: d.id, ...d.data() } as UserData)));
-        });
-        const unsub3 = onSnapshot(query(collection(db, 'scores'), orderBy('timestamp', 'desc')), snap => {
-            setScores(snap.docs.map(d => ({ id: d.id, ...d.data() } as ScoreData)));
-        });
-        const unsub4 = onSnapshot(collection(db, 'tasks'), snap => {
-            setTasks(snap.docs.map(d => ({ id: d.id, ...d.data() } as TaskData)));
-            setLoading(false);
+        const stageCondition = stageFilter !== 'all' ? stageFilter : null;
+
+        const unsubTeams = onSnapshot(collection(db, 'teams'), snap => {
+            const data = snap.docs.map(d => ({ id: d.id, ...d.data() } as TeamData));
+            setTeams(stageCondition ? data.filter(t => t.stageId === stageCondition) : data);
         });
 
-        return () => { unsub1(); unsub2(); unsub3(); unsub4(); };
-    }, [stageFilter]);
+        const unsubUsers = onSnapshot(collection(db, 'users'), snap => {
+            const data = snap.docs.map(d => ({ id: d.id, ...d.data() } as UserData));
+            // Filter users: if a stage is selected, usually we want to see users belonging to that stage
+            setUsers(data);
+        });
 
-    // Independent listener for member_stats (not affected by stageFilter changes)
-    useEffect(() => {
-        const unsub = onSnapshot(collection(db, 'member_stats'), snap => {
-            const totals: Record<string, number> = {};
-            snap.docs.forEach(d => {
-                const data = d.data();
-                const tid = data.teamId as string | undefined;
-                if (tid) totals[tid] = (totals[tid] || 0) + (data.totalPoints || 0);
+        const qScores = query(collection(db, 'scores'), orderBy('timestamp', 'desc'));
+        const unsubScores = onSnapshot(qScores, snap => {
+            const data = snap.docs.map(d => ({ id: d.id, ...d.data() } as ScoreData));
+            setScores(data);
+        });
+
+        const unsubTasks = onSnapshot(collection(db, 'tasks'), snap => {
+            const data = snap.docs.map(d => ({ id: d.id, ...d.data() } as TaskData));
+            setTasks(data);
+        });
+
+        const unsubMemberStats = onSnapshot(collection(db, 'member_stats'), snap => {
+            const stats = snap.docs.map(d => d.data());
+            const grouped: Record<string, number> = {};
+            stats.forEach(s => {
+                const tId = s.teamId as string;
+                if (!grouped[tId]) grouped[tId] = 0;
+                grouped[tId] += (s.totalPoints || 0);
             });
-            setMemberStatsByTeam(totals);
-        }, () => { });
-        return unsub;
-    }, []);
+            setMemberStatsByTeam(grouped);
+        });
+
+        setLoading(false);
+
+        return () => {
+            unsubTeams();
+            unsubUsers();
+            unsubScores();
+            unsubTasks();
+            unsubMemberStats();
+        };
+    }, [user, stageFilter]);
+
 
     // =========================
     // Team Management
@@ -123,100 +143,76 @@ export default function SuperAdminPanel({ onBack }: { onBack?: () => void }) {
         e.preventDefault();
         try {
             if (editingTeam) {
-                const oldName = editingTeam.name;
-                const newName = teamName;
                 await updateDoc(doc(db, 'teams', editingTeam.id), {
-                    name: newName,
-                    leaderId: teamLeader || editingTeam.leaderId,
-                    stageId: teamStageId || null,
-                });
-                if (oldName !== newName) {
-                    logActivity({
-                        kind: 'audit',
-                        operation: 'update',
-                        entityType: 'team',
-                        entityId: editingTeam.id,
-                        entityName: newName,
-                        stageId: teamStageId || editingTeam.stageId || null,
-                        details: `الاسم السابق: ${oldName}`,
-                        actorId: user!.uid,
-                        actorName: user!.name,
-                        actorRole: user!.role,
-                    });
-                }
-                showToast('تم تحديث الفريق');
-            } else {
-                const id = `team_${Date.now()}`;
-                const finalStageId = teamStageId || null;
-                await setDoc(doc(db, 'teams', id), {
                     name: teamName,
-                    leaderId: teamLeader || '',
-                    stageId: finalStageId,
+                    leaderId: teamLeader,
+                    stageId: teamStageId || null,
+                    updatedAt: serverTimestamp()
+                });
+                showToast('تم تحديث الفريق بنجاح');
+            } else {
+                const teamData = {
+                    name: teamName,
+                    leaderId: teamLeader,
                     totalPoints: 0,
                     memberCount: 0,
-                    createdAt: serverTimestamp(),
-                });
-                logActivity({
-                    kind: 'audit',
-                    operation: 'create',
-                    entityType: 'team',
-                    entityId: id,
-                    entityName: teamName,
-                    stageId: finalStageId,
-                    actorId: user!.uid,
-                    actorName: user!.name,
-                    actorRole: user!.role,
-                });
-                showToast('تم إنشاء الفريق');
+                    stageId: teamStageId || null,
+                    createdAt: serverTimestamp()
+                };
+                const newTeamRef = doc(collection(db, 'teams'));
+                await setDoc(newTeamRef, teamData);
+                showToast('تم إضافة الفريق بنجاح');
             }
+
+            if (teamLeader) {
+                await updateDoc(doc(db, 'users', teamLeader), {
+                    teamId: editingTeam?.id || null, // Will be updated by trigger if needed, or done manually
+                    role: 'leader',
+                    stageId: teamStageId || null
+                });
+            }
+
             resetTeamForm();
-        } catch {
-            showToast('فشل في حفظ الفريق', 'error');
+        } catch (err) {
+            console.error('Save team error:', err);
+            showToast('حدث خطأ أثناء حفظ الفريق', 'error');
         }
     };
 
     const handleDeleteTeam = async () => {
         if (!deleteTeamConfirm) return;
         try {
+            // Update users of this team
+            const teamUsers = users.filter(u => u.teamId === deleteTeamConfirm.id);
+            for (const u of teamUsers) {
+                await updateDoc(doc(db, 'users', u.id), { teamId: null });
+            }
+
             await deleteDoc(doc(db, 'teams', deleteTeamConfirm.id));
-            logActivity({
-                kind: 'audit',
-                operation: 'delete',
-                entityType: 'team',
-                entityId: deleteTeamConfirm.id,
-                entityName: deleteTeamConfirm.name,
-                stageId: deleteTeamConfirm.stageId || null,
-                actorId: user!.uid,
-                actorName: user!.name,
-                actorRole: user!.role,
-            });
-            showToast('تم حذف الفريق');
+            showToast('تم حذف الفريق بنجاح');
             setDeleteTeamConfirm(null);
         } catch {
-            showToast('فشل في حذف الفريق', 'error');
+            showToast('حدث خطأ أثناء حذف الفريق', 'error');
         }
     };
 
     const resetTeamForm = () => {
-        setShowTeamModal(false);
         setEditingTeam(null);
         setTeamName('');
         setTeamLeader('');
         setTeamStageId('');
+        setShowTeamModal(false);
     };
 
     const handleRecalculateTotals = async () => {
         setRecalculating(true);
         try {
-            console.log('Starting points recalculation...');
-            // 1. Fetch current scores
+            // 1. Fetch scores
             const scoresSnap = await getDocs(collection(db, 'scores'));
             const allScores = scoresSnap.docs.map(d => ({ id: d.id, ...d.data() } as any));
-            console.log(`Fetched ${allScores.length} scores.`);
 
-            // 2. Safeguard: If no scores found, abort to prevent accidental wipe
             if (allScores.length === 0) {
-                showToast('❌ لم يتم العثور على أي سجلات نقاط. تم إلغاء العملية لحماية البيانات.', 'error');
+                showToast('لا توجد سجلات نقاط لإعادة الحساب', 'warning');
                 setRecalculating(false);
                 return;
             }
@@ -637,269 +633,51 @@ export default function SuperAdminPanel({ onBack }: { onBack?: () => void }) {
                 ))}
             </div>
 
-            {/* Overview Tab */}
+            {/* Content Switcher */}
             {activeTab === 'overview' && (
-                <motion.div
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    className="space-y-6"
-                >
-                    <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-                        <StatsCard icon="👥" label="إجمالي الفرق" value={teams.length} color="primary" />
-                        <StatsCard icon="⭐" label="إجمالي النقاط" value={totalPoints} color="accent" />
-                        <StatsCard icon="📋" label="المهام النشطة" value={activeTasksCount} color="success" />
-                        <StatsCard icon="👤" label="الأعضاء" value={totalMembers} color="primary" />
-                    </div>
-
-                    {/* Quick Actions */}
-                    <div className="glass-card p-6">
-                        <h3 className="font-bold text-text-primary mb-4">إجراءات سريعة</h3>
-                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                            <button onClick={() => setActiveTab('teams')} className="btn btn-primary text-sm">
-                                <Plus className="w-4 h-4" />
-                                إضافة فريق
-                            </button>
-                            <button onClick={() => fileInputRef.current?.click()} className="btn btn-accent text-sm">
-                                <Upload className="w-4 h-4" />
-                                استيراد حسابات
-                            </button>
-                            <button onClick={handleExportExcel} className="btn btn-ghost text-sm">
-                                <Download className="w-4 h-4" />
-                                تصدير تقرير
-                            </button>
-                            <button onClick={() => setActiveTab('reports')} className="btn btn-ghost text-sm">
-                                <BarChart3 className="w-4 h-4" />
-                                عرض التقارير
-                            </button>
-                        </div>
-                    </div>
-
-                    {/* Recent Activity */}
-                    <div className="glass-card overflow-hidden">
-                        <div className="p-4 border-b border-border">
-                            <h3 className="font-bold text-text-primary flex items-center gap-2">
-                                <Activity className="w-4 h-4 text-primary" />
-                                آخر النشاطات
-                            </h3>
-                        </div>
-                        <div className="divide-y divide-border/30 max-h-[300px] overflow-y-auto">
-                            {scores.slice(0, 10).map(score => {
-                                const team = teams.find(t => t.id === score.teamId);
-                                return (
-                                    <div key={score.id} className="p-3 px-4 flex items-center gap-3 text-sm">
-                                        <div className={`w-2 h-2 rounded-full shrink-0 ${score.type === 'earn' ? 'bg-success' : 'bg-danger'}`} />
-                                        <span className="text-text-secondary flex-1">
-                                            <span className="text-text-primary font-bold">{team?.name}</span>
-                                            {' ← '}
-                                            <span className={score.type === 'earn' ? 'text-success' : 'text-danger'}>
-                                                {score.type === 'earn' ? '+' : '-'}{score.points} نقطة
-                                            </span>
-                                        </span>
-                                    </div>
-                                );
-                            })}
-                        </div>
-                    </div>
-                </motion.div>
+                <AdminOverviewTab
+                    teams={teams}
+                    totalPoints={totalPoints}
+                    activeTasksCount={activeTasksCount}
+                    totalMembers={totalMembers}
+                    scores={scores}
+                    setActiveTab={setActiveTab}
+                    fileInputRef={fileInputRef}
+                    handleExportExcel={handleExportExcel}
+                />
             )}
 
-            {/* Teams Tab */}
             {activeTab === 'teams' && (
-                <motion.div
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    className="space-y-4"
-                >
-                    <div className="flex justify-end">
-                        <button onClick={() => setShowTeamModal(true)} className="btn btn-primary text-sm">
-                            <Plus className="w-4 h-4" />
-                            فريق جديد
-                        </button>
-                    </div>
-
-                    <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                        {teams.map(team => {
-                            const leader = users.find(u => u.id === team.leaderId);
-                            return (
-                                <div key={team.id} className="glass-card glass-card-hover p-5">
-                                    <div className="flex items-start justify-between mb-3">
-                                        <div className="flex items-center gap-3">
-                                            <div className="w-12 h-12 rounded-2xl gradient-primary flex items-center justify-center text-white font-black text-xl">
-                                                {(team.name || '؟').charAt(0)}
-                                            </div>
-                                            <div>
-                                                <h3 className="font-bold text-text-primary">{team.name}</h3>
-                                                <div className="flex items-center gap-2 mt-1">
-                                                    <p className="text-text-muted text-xs">قائد: {leader?.name || 'غير محدد'}</p>
-                                                    <StageBadge stageId={team.stageId} />
-                                                </div>
-                                            </div>
-                                        </div>
-                                        <div className="flex gap-1">
-                                            <button
-                                                onClick={() => {
-                                                    setEditingTeam(team);
-                                                    setTeamName(team.name);
-                                                    setTeamLeader(team.leaderId);
-                                                    setTeamStageId(team.stageId || '');
-                                                    setShowTeamModal(true);
-                                                }}
-                                                className="p-1.5 rounded-lg hover:bg-primary/10 text-text-muted hover:text-primary transition-colors"
-                                            >
-                                                <Edit3 className="w-3.5 h-3.5" />
-                                            </button>
-                                            <button
-                                                onClick={() => setDeleteTeamConfirm(team)}
-                                                className="p-1.5 rounded-lg hover:bg-danger/10 text-text-muted hover:text-danger transition-colors"
-                                            >
-                                                <Trash2 className="w-3.5 h-3.5" />
-                                            </button>
-                                        </div>
-                                    </div>
-                                    <div className="flex items-center gap-4 mt-4">
-                                        <div className="flex items-center gap-1.5 text-xs text-text-secondary">
-                                            <Trophy className="w-3.5 h-3.5 text-accent" />
-                                            {memberStatsByTeam[team.id] ?? team.totalPoints ?? 0} نقطة
-                                        </div>
-                                        <div className="flex items-center gap-1.5 text-xs text-text-secondary">
-                                            <Users className="w-3.5 h-3.5" />
-                                            {team.memberCount} عضو
-                                        </div>
-                                    </div>
-                                </div>
-                            );
-                        })}
-                    </div>
-
-                    {teams.length === 0 && (
-                        <EmptyState icon="🏆" title="لا توجد فرق" description="أنشئ فريقاً جديداً للبدء" />
-                    )}
-                </motion.div>
+                <AdminTeamsTab
+                    teams={teams}
+                    users={users}
+                    memberStatsByTeam={memberStatsByTeam}
+                    setShowTeamModal={setShowTeamModal}
+                    setEditingTeam={setEditingTeam}
+                    setTeamName={setTeamName}
+                    setTeamLeader={setTeamLeader}
+                    setTeamStageId={setTeamStageId}
+                    setDeleteTeamConfirm={setDeleteTeamConfirm}
+                />
             )}
 
-            {/* Users Tab */}
             {activeTab === 'users' && (
-                <motion.div
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    className="space-y-4"
-                >
-                    <div className="flex gap-3 justify-end">
-                        <button onClick={() => fileInputRef.current?.click()} className="btn btn-accent text-sm">
-                            <Upload className="w-4 h-4" />
-                            استيراد من Excel
-                        </button>
-                    </div>
-
-                    <div className="glass-card overflow-hidden">
-                        <table className="data-table">
-                            <thead>
-                                <tr>
-                                    <th>الاسم</th>
-                                    <th>البريد</th>
-                                    <th>الدور</th>
-                                    <th>الفريق</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {users.map(u => (
-                                    <tr key={u.id}>
-                                        <td className="font-bold text-text-primary">{u.name}</td>
-                                        <td className="text-text-secondary">{u.email}</td>
-                                        <td>
-                                            <span className={`badge ${u.role === 'super_admin' ? 'badge-pending' :
-                                                u.role === 'admin' ? 'badge-sync' :
-                                                    u.role === 'leader' ? 'badge-completed' : ''
-                                                }`}>
-                                                {u.role === 'super_admin' ? 'مشرف عام' :
-                                                    u.role === 'admin' ? 'مشرف' :
-                                                        u.role === 'leader' ? 'قائد' : 'عضو'}
-                                            </span>
-                                        </td>
-                                        <td className="text-text-secondary">
-                                            {teams.find(t => t.id === u.teamId)?.name || '-'}
-                                        </td>
-                                    </tr>
-                                ))}
-                            </tbody>
-                        </table>
-                    </div>
-                </motion.div>
+                <AdminUsersTab
+                    users={users}
+                    teams={teams}
+                    fileInputRef={fileInputRef}
+                />
             )}
 
-            {/* Reports Tab */}
             {activeTab === 'reports' && (
-                <motion.div
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    className="space-y-6"
-                >
-                    <div className="glass-card p-6">
-                        <h3 className="font-bold text-text-primary mb-4 flex items-center gap-2">
-                            <FileSpreadsheet className="w-5 h-5 text-success" />
-                            تصدير التقارير
-                        </h3>
-                        <p className="text-text-secondary text-sm mb-4">
-                            صدّر بيانات المسابقة كملف Excel يحتوي على ترتيب الفرق وسجل النقاط
-                        </p>
-                        <button onClick={handleExportExcel} className="btn btn-primary">
-                            <Download className="w-4 h-4" />
-                            تصدير Excel
-                        </button>
-                    </div>
-
-                    <div className="glass-card p-6 border border-warning/30 bg-warning/5">
-                        <h3 className="font-bold text-text-primary mb-4 flex items-center gap-2">
-                            <RefreshCw className="w-5 h-5 text-warning" />
-                            إعادة حساب الإجماليات
-                        </h3>
-                        <p className="text-text-secondary text-sm mb-4">
-                            استخدم هذه الميزة إذا لاحظت عدم دقة في مجموع النقاط للفرق أو الأعضاء. سيتم مسح الإجماليات الحالية وإعادة بنائها من سجلات النقاط فقط.
-                        </p>
-                        <button
-                            onClick={() => setShowRecalculateConfirm(true)}
-                            disabled={recalculating}
-                            className="btn btn-ghost text-warning border-warning/30 hover:bg-warning/10"
-                        >
-                            {recalculating ? <div className="spinner !w-4 !h-4" /> : <RefreshCw className="w-4 h-4" />}
-                            إعادة حساب النقاط
-                        </button>
-                    </div>
-
-                    <div className="glass-card p-6 border border-danger/30 bg-danger/5">
-                        <h3 className="font-bold text-text-primary mb-4 flex items-center gap-2">
-                            <Trash2 className="w-5 h-5 text-danger" />
-                            مسح سجل النشاطات والعمليات
-                        </h3>
-                        <p className="text-text-secondary text-sm mb-4">
-                            تحذير: سيتم حذف جميع سجلات "النشاطات" و "النقاط المسجلة" نهائياً، وسيتم **تصفير نقاط جميع الفرق والأفراد**. المسح سيجعل المنظومة تبدأ من الصفر (موسم جديد).
-                        </p>
-                        <button
-                            onClick={() => setShowClearLogsConfirm(true)}
-                            disabled={clearingLogs}
-                            className="btn btn-ghost text-danger border-danger/30 hover:bg-danger/10"
-                        >
-                            {clearingLogs ? <div className="spinner !w-4 !h-4" /> : <Trash2 className="w-4 h-4" />}
-                            مسح السجل بالكامل
-                        </button>
-                    </div>
-
-                    {/* Summary Stats */}
-                    <div className="grid sm:grid-cols-3 gap-4">
-                        <div className="glass-card p-5 text-center">
-                            <p className="text-3xl font-black text-accent">{scores.filter(s => s.type === 'earn').reduce((s, sc) => s + sc.points, 0)}</p>
-                            <p className="text-text-secondary text-sm mt-1">إجمالي النقاط المكتسبة</p>
-                        </div>
-                        <div className="glass-card p-5 text-center">
-                            <p className="text-3xl font-black text-danger">{scores.filter(s => s.type === 'deduct').reduce((s, sc) => s + sc.points, 0)}</p>
-                            <p className="text-text-secondary text-sm mt-1">إجمالي النقاط المخصومة</p>
-                        </div>
-                        <div className="glass-card p-5 text-center">
-                            <p className="text-3xl font-black text-primary">{scores.length}</p>
-                            <p className="text-text-secondary text-sm mt-1">إجمالي التسجيلات</p>
-                        </div>
-                    </div>
-                </motion.div>
+                <AdminReportsTab
+                    scores={scores}
+                    recalculating={recalculating}
+                    clearingLogs={clearingLogs}
+                    handleExportExcel={handleExportExcel}
+                    setShowRecalculateConfirm={setShowRecalculateConfirm}
+                    setShowClearLogsConfirm={setShowClearLogsConfirm}
+                />
             )}
 
             {/* Hidden file input for XLSX import */}

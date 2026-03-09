@@ -215,26 +215,25 @@ export function StatsCard({ icon, label, value, color = 'primary' }: StatsCardPr
 // =========================
 export function SectionHeader({ title, subtitle, action, onBack }: { title: string; subtitle?: string; action?: React.ReactNode; onBack?: () => void }) {
     return (
-        <div className="flex items-center justify-between mb-6">
-            <div className="flex items-center gap-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+            <div className="flex items-center gap-3 sm:gap-4 min-w-0">
                 {onBack && (
                     <button
                         onClick={onBack}
                         className="p-2.5 rounded-xl bg-surface/50 hover:bg-surface text-text-muted hover:text-text-primary transition-colors flex items-center justify-center shrink-0 border border-border/50 shadow-sm"
                         title="رجوع"
                     >
-                        {/* Right-pointing arrow for RTL navigation */}
                         <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
                         </svg>
                     </button>
                 )}
-                <div>
-                    <h2 className="text-xl sm:text-2xl font-black text-text-primary">{title}</h2>
-                    {subtitle && <p className="text-text-secondary text-sm mt-0.5">{subtitle}</p>}
+                <div className="min-w-0">
+                    <h2 className="text-xl sm:text-2xl font-black text-text-primary truncate">{title}</h2>
+                    {subtitle && <p className="text-text-secondary text-xs sm:text-sm mt-0.5 truncate">{subtitle}</p>}
                 </div>
             </div>
-            {action && <div>{action}</div>}
+            {action && <div className="flex items-center gap-2 self-end sm:self-auto">{action}</div>}
         </div>
     );
 }

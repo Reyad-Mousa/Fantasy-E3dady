@@ -2,16 +2,21 @@ import React from 'react';
 import { motion } from 'motion/react';
 import { X, Users, Trophy, AlertTriangle, UserPlus, ArrowRight } from 'lucide-react';
 import { ImportPreviewData } from '@/hooks/useExcelImport';
+import { STAGES_LIST } from '@/config/stages';
 
 interface ImportPreviewModalProps {
     data: ImportPreviewData;
     onConfirm: () => void;
     onCancel: () => void;
     isImporting: boolean;
+    onUpdateTeamStage: (teamId: string, stageId: string) => void;
+    stageOptions?: { id: string; name: string; }[];
 }
 
-export default function ImportPreviewModal({ data, onConfirm, onCancel, isImporting }: ImportPreviewModalProps) {
+export default function ImportPreviewModal({ data, onConfirm, onCancel, isImporting, onUpdateTeamStage, stageOptions }: ImportPreviewModalProps) {
     const totalChanges = data.newTeams.length + data.newMembers.length + data.pointUpdates.length;
+    const missingStage = data.newTeams.some(t => !t.stageId || !t.stageId.trim());
+    const options = stageOptions && stageOptions.length > 0 ? stageOptions : STAGES_LIST;
 
     return (
         <div className="modal-backdrop" onClick={!isImporting ? onCancel : undefined}>
@@ -39,16 +44,43 @@ export default function ImportPreviewModal({ data, onConfirm, onCancel, isImport
 
                 <div className="p-6 md:p-8 overflow-y-auto space-y-6" dir="rtl">
                     {data.newTeams.length > 0 && (
-                        <div className="bg-surface/50 border border-success/20 rounded-2xl p-4">
-                            <h4 className="font-bold text-success flex items-center gap-2 mb-3">
-                                <Users className="w-4 h-4" />
-                                فرق جديدة سيتم إنشاؤها ({data.newTeams.length})
-                            </h4>
-                            <div className="flex flex-wrap gap-2 text-sm">
-                                {data.newTeams.map((t, idx) => (
-                                    <span key={idx} className="bg-success/10 text-success-light px-2.5 py-1 rounded-lg font-bold border border-success/20">
-                                        {t.name}
-                                    </span>
+                        <div className="bg-surface/50 border border-success/20 rounded-2xl p-4 space-y-3">
+                            <div className="flex items-center gap-2 justify-between flex-wrap">
+                                <h4 className="font-bold text-success flex items-center gap-2">
+                                    <Users className="w-4 h-4" />
+                                    فرق جديدة سيتم إنشاؤها ({data.newTeams.length})
+                                </h4>
+                                {missingStage && (
+                                    <span className="text-warning text-xs font-bold">يجب اختيار مرحلة لكل فريق جديد</span>
+                                )}
+                            </div>
+                            <div className="space-y-2">
+                                {data.newTeams.map((t) => (
+                                    <div key={t.id} className="flex flex-col sm:flex-row gap-2 sm:items-center bg-black/20 p-3 rounded-xl border border-success/20">
+                                        <div className="font-bold text-success min-w-0">{t.name}</div>
+                                        <div className="flex-1 flex items-center gap-2">
+                                            <label className="text-xs text-text-muted whitespace-nowrap">المرحلة:</label>
+                                            <select
+                                                className={`select-field !py-1 !h-9 flex-1 ${(!t.stageId && missingStage) ? 'border-warning/60' : ''}`}
+                                                value={t.stageId}
+                                                onChange={e => onUpdateTeamStage(t.id, e.target.value)}
+                                            >
+                                                <option value="">اختر المرحلة</option>
+                                                {options.map(stage => (
+                                                    <option key={stage.id} value={stage.id}>{stage.name}</option>
+                                                ))}
+                                            </select>
+                                            {t.suggestedStageId && !t.stageId && (
+                                                <button
+                                                    type="button"
+                                                    className="text-[11px] px-2 py-1 rounded-lg bg-primary/15 text-primary border border-primary/30"
+                                                    onClick={() => onUpdateTeamStage(t.id, t.suggestedStageId || '')}
+                                                >
+                                                    استخدام {STAGES_LIST.find(s => s.id === t.suggestedStageId)?.name || 'المقترحة'}
+                                                </button>
+                                            )}
+                                        </div>
+                                    </div>
                                 ))}
                             </div>
                         </div>
@@ -114,7 +146,7 @@ export default function ImportPreviewModal({ data, onConfirm, onCancel, isImport
                     </button>
                     <button
                         onClick={onConfirm}
-                        disabled={isImporting || totalChanges === 0}
+                        disabled={isImporting || totalChanges === 0 || missingStage}
                         className="btn btn-warning flex-1 py-3 disabled:opacity-50"
                     >
                         {isImporting ? <div className="spinner !w-5 !h-5 border-2 border-black/20 border-t-black" /> : 'تأكيد وحفظ'}

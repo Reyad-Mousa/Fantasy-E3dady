@@ -18,7 +18,7 @@ import StageBadge from './StageBadge';
 
 type TargetType = 'team' | 'member';
 
-interface ScoreActivity {
+export interface ScoreActivity {
     id: string;
     kind: 'score' | 'audit';
     timestamp: any;
@@ -60,7 +60,7 @@ interface MemberUser {
     teamId: string | null;
 }
 
-interface MemberOption {
+export interface MemberOption {
     key: string;
     userId: string | null;
     name: string;
@@ -69,6 +69,8 @@ interface MemberOption {
 }
 
 // toEventDate and isPermissionDeniedError are imported from @/utils/helpers
+import { MultiMemberSelection } from './MultiMemberSelection';
+import { ScoreActivityList } from './ScoreActivityList';
 
 export default function ScoreRegistration({ onBack }: { onBack?: () => void }) {
     const { user } = useAuth();
@@ -91,6 +93,8 @@ export default function ScoreRegistration({ onBack }: { onBack?: () => void }) {
     const [targetType, setTargetType] = useState<TargetType>('team');
     // CHANGED: multi-select members
     const [selectedMemberKeys, setSelectedMemberKeys] = useState<string[]>([]);
+
+    const [activeMobileTab, setActiveMobileTab] = useState<'form' | 'activities'>('form');
 
     const stageScopedRole = user?.role === 'admin' || user?.role === 'leader';
     const missingStageScope = Boolean(stageScopedRole && !user?.stageId);
@@ -503,20 +507,39 @@ export default function ScoreRegistration({ onBack }: { onBack?: () => void }) {
         <div dir="rtl" className="space-y-4 sm:space-y-6">
             <SectionHeader
                 title="تسجيل النقاط"
-                subtitle={user?.role === 'leader' ? 'تسجيل نقاط فردية أو للفرق' : 'تسجيل نقاط فردية أو للفرق (أونلاين/أوفلاين)'}
+                subtitle={user?.role === 'leader' ? 'تسجيل نقاط للأفراد والفرق' : 'تسجيل النقاط (أونلاين/أوفلاين)'}
                 onBack={onBack}
                 action={
                     <div className="flex items-center gap-2 sm:gap-3">
                         <StageBadge stageId={user?.stageId} size="md" />
                         {pendingCount > 0 && (
-                            <button onClick={handleSync} disabled={syncing || !online} className="btn btn-accent text-xs sm:text-sm">
+                            <button onClick={handleSync} disabled={syncing || !online} className="btn btn-accent !px-3 sm:!px-4 !py-2 text-xs sm:text-sm">
                                 {syncing ? <div className="spinner !w-4 !h-4" /> : <RefreshCw className="w-4 h-4" />}
-                                <span className="hidden xs:inline">مزامنة</span> ({pendingCount})
+                                <span className="hidden sm:inline mr-1">مزامنة ({pendingCount})</span>
+                                <span className="sm:hidden">{pendingCount}</span>
                             </button>
                         )}
                     </div>
                 }
             />
+
+            {/* Mobile Tabs */}
+            <div className="lg:hidden flex p-1 bg-surface/40 rounded-2xl border border-white/5 mb-4">
+                <button
+                    onClick={() => setActiveMobileTab('form')}
+                    className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl font-bold text-xs transition-all ${activeMobileTab === 'form' ? 'bg-primary text-white shadow-lg shadow-primary/20' : 'text-text-secondary'}`}
+                >
+                    <Plus className="w-4 h-4" />
+                    تسجيل جديد
+                </button>
+                <button
+                    onClick={() => setActiveMobileTab('activities')}
+                    className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl font-bold text-xs transition-all ${activeMobileTab === 'activities' ? 'bg-primary text-white shadow-lg shadow-primary/20' : 'text-text-secondary'}`}
+                >
+                    <Clock className="w-4 h-4" />
+                    آخر المسجل
+                </button>
+            </div>
 
             {missingStageScope && (
                 <div className="glass-card border border-danger/30 bg-danger/5 p-4">
@@ -528,7 +551,7 @@ export default function ScoreRegistration({ onBack }: { onBack?: () => void }) {
             <div className="grid lg:grid-cols-5 gap-4 sm:gap-6">
 
                 {/* ── FORM ── */}
-                <div className="lg:col-span-2">
+                <div className={`lg:col-span-2 ${activeMobileTab !== 'form' ? 'hidden lg:block' : ''}`}>
                     <form onSubmit={handleSubmit} className="glass-card p-4 sm:p-6 space-y-4 sm:space-y-5">
                         <fieldset disabled={missingStageScope || submitting} className={missingStageScope ? 'opacity-60 pointer-events-none' : ''}>
 
@@ -566,128 +589,20 @@ export default function ScoreRegistration({ onBack }: { onBack?: () => void }) {
                             </div>
 
                             {/* Multi-member selector */}
-                            <AnimatePresence>
-                                {targetType === 'member' && (
-                                    <motion.div
-                                        initial={{ opacity: 0, height: 0 }}
-                                        animate={{ opacity: 1, height: 'auto' }}
-                                        exit={{ opacity: 0, height: 0 }}
-                                        className="space-y-2 overflow-hidden"
-                                    >
-                                        <div className="flex items-center justify-between">
-                                            <label className="text-xs font-bold text-text-secondary">
-                                                الأفراد
-                                                {selectedMembers.length > 0 && (
-                                                    <span className="mr-1.5 bg-accent/20 text-accent px-1.5 py-0.5 rounded-full text-[10px]">
-                                                        {selectedMembers.length} مختار
-                                                    </span>
-                                                )}
-                                            </label>
-                                            {availableMembers.length > 0 && (
-                                                <div className="flex gap-2">
-                                                    <button type="button" onClick={selectAllMembers}
-                                                        className="text-[11px] font-bold text-primary hover:text-primary-light transition-colors">
-                                                        تحديد الكل
-                                                    </button>
-                                                    {selectedMembers.length > 0 && (
-                                                        <button type="button" onClick={clearMembers}
-                                                            className="text-[11px] font-bold text-danger hover:text-danger/80 transition-colors">
-                                                            إلغاء الكل
-                                                        </button>
-                                                    )}
-                                                </div>
-                                            )}
-                                        </div>
-
-                                        {/* Member chips list */}
-                                        {!selectedTeam ? (
-                                            <p className="text-xs text-text-muted text-center py-3 bg-surface/40 rounded-xl border border-border/30">
-                                                اختر الفريق أولاً
-                                            </p>
-                                        ) : availableMembers.length === 0 ? (
-                                            <p className="text-xs text-text-muted text-center py-3 bg-surface/40 rounded-xl border border-border/30">
-                                                لا يوجد أعضاء في هذا الفريق
-                                            </p>
-                                        ) : (
-                                            <div className="max-h-40 overflow-y-auto overscroll-contain space-y-1 border border-border/40 rounded-xl p-2 bg-surface/30">
-                                                {availableMembers.map(member => {
-                                                    const isSelected = selectedMemberKeys.includes(member.key);
-                                                    return (
-                                                        <button
-                                                            key={member.key}
-                                                            type="button"
-                                                            onClick={() => toggleMember(member.key)}
-                                                            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg transition-all text-right ${isSelected
-                                                                ? 'bg-accent/15 border border-accent/40 text-accent-light'
-                                                                : 'hover:bg-surface/60 border border-transparent text-text-secondary'
-                                                                }`}
-                                                        >
-                                                            <div className={`w-4 h-4 rounded-full border-2 shrink-0 flex items-center justify-center transition-all ${isSelected ? 'bg-accent border-accent' : 'border-border'
-                                                                }`}>
-                                                                {isSelected && <Check className="w-2.5 h-2.5 text-white" />}
-                                                            </div>
-                                                            <div className="w-6 h-6 rounded-full bg-primary/20 flex items-center justify-center text-[10px] font-bold text-primary shrink-0">
-                                                                {(member.name || '؟').charAt(0)}
-                                                            </div>
-                                                            <button
-                                                                type="button"
-                                                                onClick={(event) => {
-                                                                    event.stopPropagation();
-                                                                    setMemberDetails({
-                                                                        memberKey: member.key,
-                                                                        memberUserId: member.userId,
-                                                                        memberName: member.name,
-                                                                        name: member.name,
-                                                                        teamId: member.teamId,
-                                                                        teamName: getSelectedTeam()?.name || teams.find(team => team.id === member.teamId)?.name || 'فريق غير معروف',
-                                                                        stageId: getSelectedTeam()?.stageId || teams.find(team => team.id === member.teamId)?.stageId || null,
-                                                                    });
-                                                                }}
-                                                                className="text-xs font-bold flex-1 truncate text-right hover:text-primary-light transition-colors"
-                                                            >
-                                                                {member.name}
-                                                            </button>
-                                                            {member.source === 'team_list' && (
-                                                                <span className="text-[9px] text-text-muted shrink-0">قائمة</span>
-                                                            )}
-                                                        </button>
-                                                    );
-                                                })}
-                                            </div>
-                                        )}
-
-                                        {/* Selected chips */}
-                                        {selectedMembers.length > 0 && (
-                                            <div className="flex flex-wrap gap-1.5">
-                                                {selectedMembers.map(m => (
-                                                    <span key={m.key}
-                                                        className="flex items-center gap-1 text-[11px] font-bold bg-accent/15 text-accent border border-accent/30 px-2 py-0.5 rounded-full">
-                                                        <button
-                                                            type="button"
-                                                            onClick={() => setMemberDetails({
-                                                                memberKey: m.key,
-                                                                memberUserId: m.userId,
-                                                                memberName: m.name,
-                                                                name: m.name,
-                                                                teamId: m.teamId,
-                                                                teamName: getSelectedTeam()?.name || teams.find(team => team.id === m.teamId)?.name || 'فريق غير معروف',
-                                                                stageId: getSelectedTeam()?.stageId || teams.find(team => team.id === m.teamId)?.stageId || null,
-                                                            })}
-                                                            className="hover:text-primary-light transition-colors"
-                                                        >
-                                                            {m.name}
-                                                        </button>
-                                                        <button type="button" onClick={() => toggleMember(m.key)}
-                                                            className="hover:text-danger transition-colors">
-                                                            <X className="w-2.5 h-2.5" />
-                                                        </button>
-                                                    </span>
-                                                ))}
-                                            </div>
-                                        )}
-                                    </motion.div>
-                                )}
-                            </AnimatePresence>
+                            {targetType === 'member' && (
+                                <MultiMemberSelection
+                                    availableMembers={availableMembers}
+                                    selectedMembers={selectedMembers}
+                                    selectedMemberKeys={selectedMemberKeys}
+                                    selectedTeam={selectedTeam}
+                                    teams={teams}
+                                    toggleMember={toggleMember}
+                                    selectAllMembers={selectAllMembers}
+                                    clearMembers={clearMembers}
+                                    setMemberDetails={setMemberDetails}
+                                    getSelectedTeam={getSelectedTeam}
+                                />
+                            )}
 
                             {/* Task select */}
                             <div className="space-y-1.5">
@@ -731,7 +646,7 @@ export default function ScoreRegistration({ onBack }: { onBack?: () => void }) {
                                         initial={{ opacity: 0, height: 0 }}
                                         animate={{ opacity: 1, height: 'auto' }}
                                         exit={{ opacity: 0, height: 0 }}
-                                        className={`p-3 sm:p-4 rounded-xl border overflow-hidden ${scoreType === 'earn' ? 'bg-success/5 border-success/20' : 'bg-danger/5 border-danger/20'}`}
+                                        className={`p-3 sm:p-4 rounded-xl border overflow-y-auto max-h-48 ${scoreType === 'earn' ? 'bg-success/5 border-success/20' : 'bg-danger/5 border-danger/20'}`}
                                     >
                                         <p className="text-xs text-text-secondary mb-1.5">معاينة:</p>
 
@@ -793,7 +708,7 @@ export default function ScoreRegistration({ onBack }: { onBack?: () => void }) {
                 </div>
 
                 {/* ── RECENT SCORES ── */}
-                <div className="lg:col-span-3">
+                <div className={`lg:col-span-3 ${activeMobileTab !== 'activities' ? 'hidden lg:block' : ''}`}>
                     <div className="glass-card overflow-hidden">
                         <div className="p-4 border-b border-border flex items-center justify-between">
                             <h3 className="font-bold text-text-primary flex items-center gap-2 text-sm sm:text-base">
@@ -803,100 +718,15 @@ export default function ScoreRegistration({ onBack }: { onBack?: () => void }) {
                             <SyncBadge count={pendingCount} />
                         </div>
 
-                        <div className="divide-y divide-border/30 max-h-[460px] overflow-y-auto">
-                            {missingStageScope ? (
-                                <div className="p-12 text-center">
-                                    <div className="text-4xl mb-3">⚠️</div>
-                                    <p className="text-text-secondary text-sm font-bold">لا يمكن عرض التسجيلات قبل تعيين المرحلة</p>
-                                </div>
-                            ) : recentActivities.length > 0 ? recentActivities.map((activity, i) => {
-                                const isEarn = activity.scoreType === 'earn';
-                                const isMember = activity.targetType === 'member';
-                                const points = Math.abs(Number(activity.points || 0));
-                                const teamName = activity.teamName || teams.find(t => t.id === activity.teamId)?.name || '؟';
-                                const taskTitle = activity.taskTitle || tasks.find(t => t.id === activity.taskId)?.title || activity.customNote || 'مهمة مخصصة';
-                                const eventDate = toEventDate(activity.timestamp);
-                                const timeAgo = eventDate.getTime() > 0
-                                    ? formatDistanceToNow(eventDate, { addSuffix: true, locale: ar })
-                                    : 'الآن';
-                                return (
-                                    <motion.div
-                                        key={activity.id}
-                                        initial={{ opacity: 0, x: -10 }}
-                                        animate={{ opacity: 1, x: 0 }}
-                                        transition={{ delay: i * 0.03 }}
-                                        className="p-4 sm:p-5 hover:bg-white/[0.02] transition-colors"
-                                    >
-                                        <div className="flex items-start gap-3 sm:gap-4">
-                                            <div className={`w-10 h-10 sm:w-12 sm:h-12 rounded-2xl flex items-center justify-center shrink-0 border shadow-lg ${isEarn
-                                                ? 'bg-success/10 border-success/30 text-success shadow-success/10'
-                                                : 'bg-danger/10 border-danger/30 text-danger shadow-danger/10'}`}>
-                                                {isEarn ? <Trophy className="w-5 h-5 sm:w-6 sm:h-6" /> : <AlertTriangle className="w-5 h-5 sm:w-6 sm:h-6" />}
-                                            </div>
-
-                                            <div className="flex-1 min-w-0">
-                                                <div className="flex items-start justify-between gap-2">
-                                                    <div className="space-y-1.5 min-w-0">
-                                                        <h4 className="font-bold text-text-primary text-sm sm:text-base leading-tight">
-                                                            {isMember
-                                                                ? (
-                                                                    <button
-                                                                        type="button"
-                                                                        onClick={() => setMemberDetails({
-                                                                            memberKey: activity.memberKey || buildMemberKey({ teamId: activity.teamId, memberName: activity.memberName || undefined }),
-                                                                            memberUserId: activity.memberUserId || null,
-                                                                            memberName: activity.memberName || 'فرد',
-                                                                            name: activity.memberName || 'فرد',
-                                                                            teamId: activity.teamId || '',
-                                                                            teamName,
-                                                                            stageId: activity.stageId || null,
-                                                                        })}
-                                                                        className="text-primary-light hover:text-primary transition-colors"
-                                                                    >
-                                                                        {activity.memberName || 'فرد'}
-                                                                    </button>
-                                                                )
-                                                                : teamName
-                                                            }
-                                                        </h4>
-                                                        <div className="flex flex-wrap items-center gap-1.5">
-                                                            {isMember && (
-                                                                <span className="inline-flex items-center gap-1 text-[10px] text-text-muted bg-white/5 px-2 py-0.5 rounded-md border border-white/5">
-                                                                    <Users className="w-3 h-3" />{teamName}
-                                                                </span>
-                                                            )}
-                                                            {activity.stageId && <StageBadge stageId={activity.stageId} size="sm" />}
-                                                        </div>
-                                                    </div>
-                                                    <div className={`shrink-0 px-3 py-1.5 sm:px-4 sm:py-2 rounded-xl font-black text-base sm:text-lg border flex items-center gap-1 ${isEarn
-                                                        ? 'bg-success/10 text-success border-success/20'
-                                                        : 'bg-danger/10 text-danger border-danger/20'}`}>
-                                                        {isEarn ? '+' : '-'}{points}
-                                                        <span className="text-[10px] font-bold opacity-70">نقطة</span>
-                                                    </div>
-                                                </div>
-
-                                                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-2.5 text-xs text-text-secondary">
-                                                    <span className="flex items-center gap-1">
-                                                        <Star className="w-3.5 h-3.5 text-accent/60" />
-                                                        {taskTitle}
-                                                    </span>
-                                                    <span className="flex items-center gap-1 text-text-muted">
-                                                        <Shield className="w-3.5 h-3.5" />
-                                                        بواسطة: <span className="text-primary-light/80 font-bold">{activity.actorName || 'غير معروف'}</span>
-                                                    </span>
-                                                    <span className="text-text-muted/60 text-[10px]">{timeAgo}</span>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </motion.div>
-                                );
-                            }) : (
-                                <div className="p-12 text-center">
-                                    <div className="text-4xl mb-3">📊</div>
-                                    <p className="text-text-secondary text-sm font-bold">لا توجد تسجيلات بعد</p>
-                                </div>
-                            )}
+                        <div className="divide-y divide-border/30 max-h-[70vh] lg:max-h-[600px] overflow-y-auto overscroll-contain">
+                            <ScoreActivityList
+                                activities={recentActivities}
+                                teams={teams}
+                                tasks={tasks}
+                                missingStageScope={missingStageScope}
+                                setMemberDetails={setMemberDetails}
+                                buildMemberKey={buildMemberKey}
+                            />
                         </div>
                     </div>
                 </div>
