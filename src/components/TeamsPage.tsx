@@ -283,7 +283,7 @@ export default function TeamsPage({ onBack }: { onBack?: () => void }) {
                     )}
                 </div>
 
-                <div className="flex items-center gap-4 shrink-0">
+                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 sm:gap-4 shrink-0 w-full sm:w-auto">
                     <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-surface border border-border/50 text-sm font-bold text-text-secondary w-full sm:w-auto justify-center">
                         <Users className="w-4 h-4 text-primary" />
                         <span>عدد الفرق:</span>
@@ -292,7 +292,7 @@ export default function TeamsPage({ onBack }: { onBack?: () => void }) {
                     {canExportReports(user.role) && (
                         <button
                             onClick={handleExportTeamsReport}
-                            className="btn btn-ghost text-sm w-full sm:w-auto"
+                            className="btn btn-ghost text-sm w-full sm:w-auto justify-center"
                             title="تصدير بيانات الفرق"
                         >
                             <Download className="w-4 h-4" />
@@ -300,7 +300,7 @@ export default function TeamsPage({ onBack }: { onBack?: () => void }) {
                         </button>
                     )}
                     {canCreateTeam && (
-                        <button onClick={() => setShowTeamModal(true)} className="btn btn-primary text-sm w-full sm:w-auto">
+                        <button onClick={() => setShowTeamModal(true)} className="btn btn-primary text-sm w-full sm:w-auto justify-center">
                             <Plus className="w-4 h-4" />
                             فريق جديد
                         </button>

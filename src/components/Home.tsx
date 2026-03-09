@@ -534,7 +534,7 @@ export default function Home({ onNavigate }: HomeProps) {
 
           {/* User Quick Stats in Sidebar on Desktop or as Cards on Mobile */}
           {user && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-1 gap-4">
+            <div className="grid grid-cols-2 lg:grid-cols-1 gap-3 sm:gap-4">
               <StatsCard icon="🏆" label="ترتيبك" value={stats.rank} color="accent" />
               <StatsCard icon="⭐" label="نقاطك" value={stats.points} color="primary" />
             </div>
@@ -556,23 +556,23 @@ export default function Home({ onNavigate }: HomeProps) {
               <div className="w-2 h-6 bg-accent rounded-full" />
               ماذا تود أن تفعل اليوم؟
             </h2>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 relative z-10">
-              <button onClick={() => navigate('scores')} className="btn btn-primary py-4 rounded-2xl h-full flex flex-col items-center gap-3 shadow-lg shadow-primary/20 group hover:-translate-y-1 transition-all">
-                <div className="bg-white/10 p-2 rounded-xl group-hover:scale-110 transition-transform"><Star className="w-6 h-6" /></div>
-                <span>تسجيل النقاط</span>
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 relative z-10">
+              <button onClick={() => navigate('scores')} className="btn btn-primary py-3 sm:py-4 rounded-2xl h-full flex flex-col items-center gap-2 sm:gap-3 shadow-lg shadow-primary/20 group hover:-translate-y-1 transition-all text-xs sm:text-sm">
+                <div className="bg-white/10 p-1.5 sm:p-2 rounded-xl group-hover:scale-110 transition-transform"><Star className="w-5 h-5 sm:w-6 sm:h-6" /></div>
+                <span className="text-center font-bold">تسجيل النقاط</span>
               </button>
-              <button onClick={() => navigate('tasks')} className="btn btn-accent py-4 rounded-2xl h-full flex flex-col items-center gap-3 shadow-lg shadow-accent/20 group hover:-translate-y-1 transition-all text-bg font-black">
-                <div className="bg-bg/10 p-2 rounded-xl group-hover:scale-110 transition-transform"><ListTodo className="w-6 h-6 text-bg" /></div>
-                <span>عرض المهام</span>
+              <button onClick={() => navigate('tasks')} className="btn btn-accent py-3 sm:py-4 rounded-2xl h-full flex flex-col items-center gap-2 sm:gap-3 shadow-lg shadow-accent/20 group hover:-translate-y-1 transition-all text-bg font-black text-xs sm:text-sm">
+                <div className="bg-bg/10 p-1.5 sm:p-2 rounded-xl group-hover:scale-110 transition-transform"><ListTodo className="w-5 h-5 sm:w-6 sm:h-6 text-bg" /></div>
+                <span className="text-center">عرض المهام</span>
               </button>
-              <button onClick={() => navigate('teams')} className="btn btn-ghost py-4 rounded-2xl h-full flex flex-col items-center gap-3 border-2 border-border/30 hover:border-text-primary hover:-translate-y-1 transition-all group">
-                <div className="bg-surface p-2 rounded-xl group-hover:scale-110 transition-transform"><Users className="w-6 h-6" /></div>
-                <span>إدارة الفرق</span>
+              <button onClick={() => navigate('teams')} className="btn btn-ghost py-3 sm:py-4 rounded-2xl h-full flex flex-col items-center gap-2 sm:gap-3 border-2 border-border/30 hover:border-text-primary hover:-translate-y-1 transition-all group text-xs sm:text-sm">
+                <div className="bg-surface p-1.5 sm:p-2 rounded-xl group-hover:scale-110 transition-transform"><Users className="w-5 h-5 sm:w-6 sm:h-6" /></div>
+                <span className="text-center font-bold">إدارة الفرق</span>
               </button>
               {user.role === 'super_admin' && (
-                <button onClick={() => navigate('admin')} className="btn btn-ghost py-4 rounded-2xl h-full flex flex-col items-center gap-3 border-2 border-border/30 hover:border-text-primary hover:-translate-y-1 transition-all group">
-                  <div className="bg-surface p-2 rounded-xl group-hover:scale-110 transition-transform"><Target className="w-6 h-6" /></div>
-                  <span>لوحة التحكم</span>
+                <button onClick={() => navigate('admin')} className="btn btn-ghost py-3 sm:py-4 rounded-2xl h-full flex flex-col items-center gap-2 sm:gap-3 border-2 border-border/30 hover:border-text-primary hover:-translate-y-1 transition-all group text-xs sm:text-sm">
+                  <div className="bg-surface p-1.5 sm:p-2 rounded-xl group-hover:scale-110 transition-transform"><Target className="w-5 h-5 sm:w-6 sm:h-6" /></div>
+                  <span className="text-center font-bold">لوحة التحكم</span>
                 </button>
               )}
             </div>
