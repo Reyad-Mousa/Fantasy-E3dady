@@ -1,5 +1,6 @@
 import type { QueryDocumentSnapshot, DocumentData } from 'firebase/firestore';
 import { buildMemberKey, normalizeMemberName, toCanonicalMemberKey } from './memberKeys';
+import { roundPointsValue } from '@/utils/helpers';
 
 export interface ScoreEntryLike {
     teamId?: string | null;
@@ -193,7 +194,10 @@ export const aggregateMemberStatsTotals = (
         });
     }
 
-    return Array.from(grouped.values());
+    return Array.from(grouped.values()).map((entry) => ({
+        ...entry,
+        totalPoints: roundPointsValue(Number(entry.totalPoints || 0)),
+    }));
 };
 
 export const aggregateMemberStatsTotalsFromDocs = (
@@ -268,7 +272,10 @@ export const mergeTeamMemberTotals = ({
         merged.push(entry);
     });
 
-    return merged.sort((a, b) => {
+    return merged.map((entry) => ({
+        ...entry,
+        totalPoints: roundPointsValue(Number(entry.totalPoints || 0)),
+    })).sort((a, b) => {
         const pointDiff = Number(b.totalPoints || 0) - Number(a.totalPoints || 0);
         if (pointDiff !== 0) return pointDiff;
         return String(a.memberName || '').localeCompare(String(b.memberName || ''), 'ar');

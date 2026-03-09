@@ -73,3 +73,10 @@ export function getRoleBadgeColor(role: string): string {
 export function formatPoints(points: number): string {
     return String(Math.round(points));
 }
+
+/**
+ * Rounds a points value to the nearest integer and normalizes invalid values to 0.
+ */
+export function roundPointsValue(points: number): number {
+    return Number.isFinite(points) ? Math.round(points) : 0;
+}

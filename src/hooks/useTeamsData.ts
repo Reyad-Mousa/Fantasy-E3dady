@@ -10,6 +10,7 @@ import {
     createAuditLog,
     moveTeamMember,
 } from '@/services/teamsService';
+import { roundPointsValue } from '@/utils/helpers';
 
 export interface TeamData {
     id: string;
@@ -46,7 +47,7 @@ export function useTeamsData(user: any, showToast: (msg: string, type?: 'success
             snap.docs.forEach(d => {
                 const data = d.data();
                 if (data.memberKey) {
-                    stats[data.memberKey] = data.totalPoints || 0;
+                    stats[data.memberKey] = roundPointsValue(Number(data.totalPoints || 0));
                 }
             });
             setMemberStats(stats);

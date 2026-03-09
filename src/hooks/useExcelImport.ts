@@ -1,13 +1,13 @@
 import { useState } from 'react';
-import * as XLSX from 'xlsx-js-style';
+import * as XLSX from 'xlsx';
 import { db } from '@/services/firebase';
-import { doc, writeBatch, collection, serverTimestamp, increment } from 'firebase/firestore';
+import { doc, writeBatch, collection, serverTimestamp, increment, arrayUnion } from 'firebase/firestore';
 import { TeamData } from './useTeamsData';
 import { buildMemberKey } from '@/services/memberKeys';
 import { logActivity } from '@/services/activityLogger';
 
 export interface ImportPreviewData {
-    newTeams: { name: string; stageId: string; }[];
+    newTeams: { id: string; name: string; stageId: string; suggestedStageId?: string | null; }[];
     newMembers: { teamId: string; teamName: string; memberName: string; stageId: string }[];
     pointUpdates: {
         memberKey: string;
@@ -30,6 +30,14 @@ export function useExcelImport(
 ) {
     const [previewData, setPreviewData] = useState<ImportPreviewData | null>(null);
     const [isImporting, setIsImporting] = useState(false);
+
+    const commitOperations = async (operations: Array<(batch: ReturnType<typeof writeBatch>) => void>, chunkSize = 450) => {
+        for (let i = 0; i < operations.length; i += chunkSize) {
+            const batch = writeBatch(db);
+            operations.slice(i, i + chunkSize).forEach(operation => operation(batch));
+            await batch.commit();
+        }
+    };
 
     const parseExcel = async (file: File, currentStageFilter: string) => {
         try {
@@ -73,15 +81,15 @@ export function useExcelImport(
                         } else {
                             // It's a new team
                             if (!newTeamIdMap.has(teamName)) {
-                                const newId = `team_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
-                                // Assign to the current Stage Filter if valid, else fallback to user.stageId
-                                const stageIdToAssign = (currentStageFilter !== 'all' && currentStageFilter)
+                                const slug = teamName.trim().toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '').slice(0, 40);
+                                const newId = `team_${slug || 'new'}_${newTeams.length + 1}_${Date.now()}`;
+                                const suggestedStageId = (currentStageFilter !== 'all' && currentStageFilter)
                                     ? currentStageFilter
                                     : (user?.stageId || '');
 
                                 newTeamIdMap.set(teamName, newId);
-                                newTeams.push({ name: teamName, stageId: stageIdToAssign });
-                                currentParsedStageId = stageIdToAssign;
+                                newTeams.push({ id: newId, name: teamName, stageId: '', suggestedStageId });
+                                currentParsedStageId = suggestedStageId;
                             }
                             currentParsedTeamId = newTeamIdMap.get(teamName)!;
                         }
@@ -138,25 +146,46 @@ export function useExcelImport(
         }
     };
 
+    const updateNewTeamStage = (teamId: string, stageId: string) => {
+        setPreviewData(prev => {
+            if (!prev) return prev;
+            return {
+                ...prev,
+                newTeams: prev.newTeams.map(t => t.id === teamId ? { ...t, stageId } : t),
+                newMembers: prev.newMembers.map(m => m.teamId === teamId ? { ...m, stageId } : m),
+                pointUpdates: prev.pointUpdates.map(p => p.teamId === teamId ? { ...p, stageId } : p),
+            };
+        });
+    };
+
     const confirmImport = async () => {
         if (!previewData) return;
+        const missingStage = previewData.newTeams.some(t => !t.stageId || !t.stageId.trim());
+        if (missingStage) {
+            showToast('يجب تحديد مرحلة لكل فريق جديد قبل المتابعة', 'warning');
+            return;
+        }
+        if (user?.role === 'admin') {
+            const invalidStage = previewData.newTeams.some(t => t.stageId !== user.stageId);
+            if (invalidStage) {
+                showToast('لا يمكن للمشرف اختيار مرحلة مختلفة عن مرحلته', 'error');
+                return;
+            }
+        }
         setIsImporting(true);
 
         try {
-            // Firestore transactions limits batch writes to 500
-            // We'll construct chunks if needed, but for now assuming typical file < 400 operations
-            const BATCH_CHUNK = 400;
-            const operations: ((batch: any) => void)[] = [];
+            const teamCreationOps: Array<(batch: ReturnType<typeof writeBatch>) => void> = [];
+            const memberAdditionOps: Array<(batch: ReturnType<typeof writeBatch>) => void> = [];
+            const scoreOps: Array<(batch: ReturnType<typeof writeBatch>) => void> = [];
 
-            // 1. Create New Teams
+            // 1. Create new teams first so subsequent score writes pass Firestore rules.
             previewData.newTeams.forEach(team => {
-                const teamId = previewData.newMembers.find(m => m.teamName === team.name)?.teamId
-                    || `team_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
-
+                const teamId = team.id;
                 const teamRef = doc(db, 'teams', teamId);
                 const assignedMembers = previewData.newMembers.filter(m => m.teamId === teamId).map(m => m.memberName);
 
-                operations.push((batch) => {
+                teamCreationOps.push((batch) => {
                     batch.set(teamRef, {
                         name: team.name,
                         stageId: team.stageId || null,
@@ -170,10 +199,10 @@ export function useExcelImport(
                 });
             });
 
-            // 2. Add New Members to Existing Teams
+            // 2. Update existing teams with new members.
+            const newTeamIds = new Set(previewData.newTeams.map(t => t.id));
             const memberAdditionsByTeam = previewData.newMembers.reduce((acc, curr) => {
-                // Only process existing teams, new teams handled above
-                if (!previewData.newTeams.find(t => t.name === curr.teamName)) {
+                if (!newTeamIds.has(curr.teamId)) {
                     if (!acc[curr.teamId]) acc[curr.teamId] = [];
                     acc[curr.teamId].push(curr.memberName);
                 }
@@ -182,18 +211,15 @@ export function useExcelImport(
 
             Object.entries(memberAdditionsByTeam).forEach(([teamId, membersToAdd]) => {
                 const teamRef = doc(db, 'teams', teamId);
-                const team = teams.find(t => t.id === teamId);
-                if (team) {
-                    operations.push((batch) => {
-                        batch.update(teamRef, {
-                            members: [...(team.members || []), ...membersToAdd],
-                            memberCount: (team.members?.length || 0) + membersToAdd.length
-                        });
+                memberAdditionOps.push((batch) => {
+                    batch.update(teamRef, {
+                        members: arrayUnion(...membersToAdd),
+                        memberCount: increment(membersToAdd.length)
                     });
-                }
+                });
             });
 
-            // 3. Process Point Updates
+            // 3. Apply point deltas after all teams referenced by scores exist.
             previewData.pointUpdates.forEach(update => {
                 const scoreRef = doc(collection(db, 'scores'));
                 const statRef = doc(db, 'member_stats', update.memberKey);
@@ -203,10 +229,11 @@ export function useExcelImport(
                 const absoluteDelta = Math.abs(update.delta);
 
                 // Add Score Document
-                operations.push((batch) => {
+                scoreOps.push((batch) => {
                     batch.set(scoreRef, {
                         teamId: update.teamId,
                         taskId: 'import_adjust',
+                        taskTitle: 'تعديل عبر الإكسيل',
                         points: absoluteDelta,
                         type: scoreType,
                         targetType: 'member',
@@ -221,12 +248,12 @@ export function useExcelImport(
                         timestamp: serverTimestamp(),
                         syncedAt: serverTimestamp(),
                         pendingSync: false,
-                        customNote: 'تعديل مجمع عبر ملف إكسيل'
+                        customNote: 'تعديل عبر الإكسيل'
                     });
                 });
 
                 // Update member_stats
-                operations.push((batch) => {
+                scoreOps.push((batch) => {
                     batch.set(statRef, {
                         memberKey: update.memberKey,
                         memberName: update.memberName,
@@ -238,20 +265,16 @@ export function useExcelImport(
                 });
 
                 // Update team totals
-                operations.push((batch) => {
+                scoreOps.push((batch) => {
                     batch.update(teamRef, {
                         totalPoints: increment(update.delta)
                     });
                 });
             });
 
-            // Execute Batches
-            for (let i = 0; i < operations.length; i += BATCH_CHUNK) {
-                const chunk = operations.slice(i, i + BATCH_CHUNK);
-                const batch = writeBatch(db);
-                chunk.forEach(op => op(batch));
-                await batch.commit();
-            }
+            await commitOperations(teamCreationOps);
+            await commitOperations(memberAdditionOps);
+            await commitOperations(scoreOps);
 
             // Log activity manually for the import
             if (previewData.pointUpdates.length > 0) {
@@ -275,9 +298,13 @@ export function useExcelImport(
             setPreviewData(null);
             showToast('تم تطبيق التعديلات بنجاح ✅', 'success');
             onSuccess();
-        } catch (error) {
+        } catch (error: any) {
             console.error("Import error:", error);
-            showToast('فشل في حفظ التعديلات', 'error');
+            if (error?.code === 'permission-denied') {
+                showToast('فشل الاستيراد بسبب صلاحيات Firestore أو مرحلة غير مطابقة', 'error');
+            } else {
+                showToast('فشل في حفظ التعديلات', 'error');
+            }
         } finally {
             setIsImporting(false);
         }
@@ -288,6 +315,7 @@ export function useExcelImport(
         isImporting,
         parseExcel,
         confirmImport,
+        updateNewTeamStage,
         cancelImport: () => setPreviewData(null)
     };
 }
