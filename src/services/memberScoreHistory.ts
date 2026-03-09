@@ -238,7 +238,7 @@ const toHistoryItem = (
         id,
         taskId,
         taskTitle: (taskId ? taskTitles.get(taskId) : null) || score.customNote || 'مهمة مخصصة',
-        points: Math.round(Math.abs(Number(score.points || 0))),
+        points: Number(Math.abs(Number(score.points || 0)).toFixed(2)),
         type,
         actorName: typeof score.registeredByName === 'string' ? score.registeredByName : null,
         customNote: typeof score.customNote === 'string' ? score.customNote : null,
@@ -424,7 +424,7 @@ export async function getMemberScoreHistory({
             for (const { id, score } of teamScores) {
                 const type = score.type === 'deduct' ? 'deduct' : 'earn';
                 const fullPoints = Math.abs(Number(score.points || 0));
-                const perMemberPoints = Math.round(fullPoints / memberCount);
+                const perMemberPoints = Number((fullPoints / memberCount).toFixed(2));
                 if (perMemberPoints <= 0) continue;
 
                 const scoreTaskId = typeof score.taskId === 'string' ? score.taskId : null;

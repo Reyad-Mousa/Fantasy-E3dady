@@ -332,9 +332,10 @@ export default function TasksPage({ onBack, initialTaskId }: { onBack?: () => vo
     const handleGivePoints = async (member: AttendanceMember) => {
         if (!attendanceTask || !user || !canRegisterScores(user.role)) return;
         if (addingKey) return; // prevent double-click
-        const points = attendanceTask.points;
-        if (!points || points <= 0) {
-            showToast('هذه المهمة لا تحتوي على نقاط فردية', 'warning');
+        const points = attendanceTask.points || 0;
+        const teamBonus = attendanceTask.teamPoints || 0;
+        if (points === 0 && teamBonus === 0) {
+            showToast('هذه المهمة لا تحتوي على نقاط', 'warning');
             return;
         }
 
@@ -540,7 +541,11 @@ export default function TasksPage({ onBack, initialTaskId }: { onBack?: () => vo
             }
 
             if (online) {
-                showToast(`✅ تم إضافة ${points} نقطة لـ ${member.name}`);
+                if (points > 0) {
+                    showToast(`✅ تم إضافة ${points} نقطة لـ ${member.name}`);
+                } else {
+                    showToast(`✅ تم تسجيل حضور ${member.name}`);
+                }
             } else {
                 showToast(`✅ تم حفظ ${member.name} محليًا وسيتم التزامن عند عودة الإنترنت`, 'warning');
             }
@@ -868,7 +873,9 @@ export default function TasksPage({ onBack, initialTaskId }: { onBack?: () => vo
                                     <div>
                                         <h3 className="font-bold text-text-primary">{attendanceTask.title}</h3>
                                         <p className="text-xs text-purple-400 font-bold">
-                                            +{attendanceTask.points} نقطة لكل حاضر
+                                            {attendanceTask.points > 0 && `+${attendanceTask.points} نقطة لكل حاضر`}
+                                            {attendanceTask.points > 0 && (attendanceTask.teamPoints ?? 0) > 0 && ' | '}
+                                            {(attendanceTask.teamPoints ?? 0) > 0 && `+${attendanceTask.teamPoints} مكافأة فريق`}
                                         </p>
                                     </div>
                                 </div>
@@ -976,8 +983,10 @@ export default function TasksPage({ onBack, initialTaskId }: { onBack?: () => vo
                                                         <div className="spinner !w-4 !h-4" />
                                                     ) : isAdded ? (
                                                         <span>✓</span>
-                                                    ) : (
+                                                    ) : attendanceTask.points > 0 ? (
                                                         <span>+{attendanceTask.points}</span>
+                                                    ) : (
+                                                        <span className="text-xs">تسجيل</span>
                                                     )}
                                                 </button>
                                             </motion.div>

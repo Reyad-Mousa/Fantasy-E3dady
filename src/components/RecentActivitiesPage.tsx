@@ -134,17 +134,18 @@ export default function RecentActivitiesPage({ onBack }: { onBack?: () => void }
         return unsub;
     }, [user, stageFilter]);
 
-    // Global stats calculation
-    const handleCalculateGlobalStats = async () => {
+    // Auto-calculate Global Stats in real-time
+    useEffect(() => {
         if (!user) return;
+
         setCalculating(true);
-        try {
-            let q: any = collection(db, 'activities');
-            if (user.role !== 'super_admin' || stageFilter !== 'all') {
-                const targetStage = user.role === 'super_admin' ? stageFilter : user.stageId;
-                q = query(q, where('stageId', '==', targetStage));
-            }
-            const snap = await getDocs(q);
+        let qStats: any = collection(db, 'activities');
+        if (user.role !== 'super_admin' || stageFilter !== 'all') {
+            const targetStage = user.role === 'super_admin' ? stageFilter : user.stageId;
+            qStats = query(qStats, where('stageId', '==', targetStage));
+        }
+
+        const unsubStats = onSnapshot(qStats, (snap) => {
             const stats: GlobalStats = { earnCount: 0, deductCount: 0, earnTotal: 0, deductTotal: 0, createCount: 0, deleteCount: 0 };
             snap.forEach(d => {
                 const a = d.data() as ActivityDoc;
@@ -157,13 +158,14 @@ export default function RecentActivitiesPage({ onBack }: { onBack?: () => void }
                 }
             });
             setGlobalStats(stats);
-            showToast('تم تحديث الإحصائيات الشاملة بنجاح ✅');
-        } catch (err) {
-            console.error('Error calculating global stats:', err);
-        } finally {
             setCalculating(false);
-        }
-    };
+        }, (err) => {
+            console.error('Error auto-calculating global stats:', err);
+            setCalculating(false);
+        });
+
+        return unsubStats;
+    }, [user, stageFilter]);
 
     // Group by date
     const groupedActivities = useMemo(() => {
@@ -227,15 +229,12 @@ export default function RecentActivitiesPage({ onBack }: { onBack?: () => void }
                 onBack={onBack}
                 action={
                     <div className="flex items-center gap-3">
-                        <button
-                            onClick={handleCalculateGlobalStats}
-                            disabled={calculating}
-                            className="btn btn-ghost bg-surface/50 text-xs sm:text-sm border border-border/50"
-                            title="تحديث الإحصائيات لكامل التاريخ"
-                        >
-                            {calculating ? <div className="spinner !w-3.5 !h-3.5" /> : <RefreshCw className="w-4 h-4" />}
-                            <span className="hidden xs:inline">{globalStats ? 'تحديث الإحصائيات' : 'حساب إجمالي التاريخ'}</span>
-                        </button>
+                        {calculating && (
+                            <div className="flex items-center gap-2 text-xs text-text-muted bg-surface/50 px-3 py-1.5 rounded-lg border border-border/50">
+                                <span className="spinner !w-3.5 !h-3.5" />
+                                <span className="hidden xs:inline">جاري تحديث الإحصائيات...</span>
+                            </div>
+                        )}
                         <div className="bg-gradient-to-br from-primary to-accent p-2.5 rounded-xl shadow-lg hidden sm:block">
                             <Activity className="w-5 h-5 text-white" />
                         </div>

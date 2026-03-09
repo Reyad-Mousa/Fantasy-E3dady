@@ -43,7 +43,6 @@ export default function Navbar({ activeTab, setActiveTab, onLoginClick }: Navbar
   const online = useOnlineStatus();
   const { prefersLowMotion } = usePerfProfile();
   const animationsEnabled = !prefersLowMotion;
-  const [mobileOpen, setMobileOpen] = useState(false);
   const [pendingCount, setPendingCount] = useState(0);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
@@ -76,7 +75,6 @@ export default function Navbar({ activeTab, setActiveTab, onLoginClick }: Navbar
 
   const handleTabClick = (tab: string) => {
     setActiveTab(tab);
-    setMobileOpen(false);
     setUserMenuOpen(false);
   };
 
@@ -201,49 +199,47 @@ export default function Navbar({ activeTab, setActiveTab, onLoginClick }: Navbar
                 </button>
               )}
 
-              {/* Mobile menu button */}
-              <button
-                onClick={() => setMobileOpen(!mobileOpen)}
-                className="lg:hidden p-2 rounded-xl hover:bg-surface/50 transition-colors text-text-secondary"
-                aria-label="القائمة الرئيسية"
-                aria-expanded={mobileOpen}
-              >
-                {mobileOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
-              </button>
+
             </div>
           </div>
         </div>
 
-        {/* Mobile menu */}
-        <AnimatePresence>
-          {mobileOpen && (
-            <motion.div
-              initial={animationsEnabled ? { height: 0, opacity: 0 } : false}
-              animate={animationsEnabled ? { height: 'auto', opacity: 1 } : undefined}
-              exit={animationsEnabled ? { height: 0, opacity: 0 } : undefined}
-              className="lg:hidden border-t border-border/50 overflow-hidden bg-surface-card"
-            >
-              <div className="p-4 grid grid-cols-2 gap-3">
-                {filteredItems.map(item => {
-                  const isActive = activeTab === item.id;
-                  return (
-                    <button
-                      key={item.id}
-                      onClick={() => handleTabClick(item.id)}
-                      className={`flex flex-col items-center gap-2 p-4 rounded-2xl text-xs font-bold transition-all ${isActive
-                        ? 'bg-gradient-to-br from-primary to-primary-dark text-white shadow-lg shadow-primary/20 scale-[1.02]'
-                        : 'bg-white/5 text-text-secondary border border-white/5'
-                        }`}
-                    >
-                      {item.icon}
-                      {item.label}
-                    </button>
-                  );
-                })}
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
+        {/* Mobile Bottom Navigation */}
+        <div className="lg:hidden fixed bottom-0 left-0 right-0 z-50 px-4 pb-6 pt-2">
+          <div className="max-w-md mx-auto bg-surface-card/80 backdrop-blur-xl border border-white/10 rounded-3xl shadow-[0_-10px_40px_rgba(0,0,0,0.4)] flex items-center justify-around p-2">
+            {filteredItems.slice(0, 5).map(item => {
+              const isActive = activeTab === item.id;
+              return (
+                <button
+                  key={item.id}
+                  onClick={() => handleTabClick(item.id)}
+                  className={`relative flex flex-col items-center gap-1 p-2 min-w-[64px] transition-all duration-300 ${isActive ? 'text-primary' : 'text-text-muted hover:text-text-secondary'
+                    }`}
+                >
+                  {isActive && (
+                    <motion.div
+                      layoutId={animationsEnabled ? 'activeTabBottom' : undefined}
+                      className="absolute inset-0 bg-primary/10 rounded-2xl"
+                      transition={animationsEnabled ? { type: 'spring', bounce: 0.2, duration: 0.6 } : undefined}
+                    />
+                  )}
+                  <div className={`relative z-10 transition-transform duration-300 ${isActive ? 'scale-110 -translate-y-0.5' : ''}`}>
+                    {item.icon}
+                  </div>
+                  <span className="relative z-10 text-[10px] font-bold tracking-tight">
+                    {item.label}
+                  </span>
+                  {isActive && (
+                    <motion.div
+                      layoutId={animationsEnabled ? 'activeIndicator' : undefined}
+                      className="absolute -bottom-1 w-1 h-1 bg-primary rounded-full shadow-[0_0_8px_rgba(var(--primary-rgb),0.6)]"
+                    />
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </div>
       </nav>
 
       <ProfileSettings isOpen={showProfile} onClose={() => setShowProfile(false)} />

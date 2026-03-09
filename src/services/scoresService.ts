@@ -3,6 +3,9 @@
  *
  * Extracted from ScoreRegistration.tsx and TasksPage.tsx to centralise
  * Firestore writes for scores, team totals, and member_stats.
+ *
+ * Uses writeBatch for all bulk member operations to avoid Firebase
+ * rate-limit errors when registering scores for large numbers of members.
  */
 
 import {
@@ -13,11 +16,32 @@ import {
     serverTimestamp,
     setDoc,
     updateDoc,
+    writeBatch,
 } from 'firebase/firestore';
 import { db } from './firebase';
 import { addPendingScore } from './offlineDb';
 import { isOnline } from './syncService';
 import { logActivity } from './activityLogger';
+
+// ── Batch helper ───────────────────────────────────────────────────────────
+
+/** Max Firestore operations per writeBatch commit (hard limit is 500). */
+const BATCH_CHUNK_SIZE = 400;
+
+type BatchOp = (batch: ReturnType<typeof writeBatch>) => void;
+
+/**
+ * Commits an array of batch operations in chunks to avoid the 500-op limit.
+ * Each operation is a function that mutates the provided batch instance.
+ */
+async function commitInChunks(ops: BatchOp[]): Promise<void> {
+    for (let i = 0; i < ops.length; i += BATCH_CHUNK_SIZE) {
+        const chunk = ops.slice(i, i + BATCH_CHUNK_SIZE);
+        const batch = writeBatch(db);
+        for (const op of chunk) op(batch);
+        await batch.commit();
+    }
+}
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -100,7 +124,7 @@ export async function registerTeamScore(payload: TeamScorePayload): Promise<Scor
         return { successCount: 0, failedCount: 0, hasPermissionDenied: false, offline: true };
     }
 
-    // 1. Write score document
+    // 1. Write team score document
     await addDoc(collection(db, 'scores'), {
         ...scoreData,
         timestamp: serverTimestamp(),
@@ -129,54 +153,65 @@ export async function registerTeamScore(payload: TeamScorePayload): Promise<Scor
         actorRole: payload.actorRole,
     });
 
-    // 4. Distribute to members
+    // 4. Distribute to members via batched writes
     if (memberCount > 0 && totalTeamPoints > 0) {
         const perMemberShare = totalTeamPoints / memberCount;
         const perMemberChange = payload.scoreType === 'earn' ? perMemberShare : -perMemberShare;
 
-        const memberResults = await Promise.allSettled(
-            payload.members.map(async (member) => {
-                await addDoc(collection(db, 'scores'), {
-                    teamId: payload.teamId,
-                    taskId: payload.taskId,
-                    points: perMemberShare,
-                    type: payload.scoreType,
-                    targetType: 'member',
-                    source: payload.source,
-                    registeredBy: payload.registeredBy,
-                    registeredByName: payload.registeredByName,
-                    stageId: payload.stageId,
-                    memberKey: member.key,
-                    memberUserId: member.userId,
-                    memberName: member.name,
-                    applyToTeamTotal: false,
-                    timestamp: serverTimestamp(),
-                    syncedAt: serverTimestamp(),
-                    pendingSync: false,
-                });
+        const ops: BatchOp[] = [];
 
-                await setDoc(doc(db, 'member_stats', member.key), {
-                    memberKey: member.key,
-                    memberUserId: member.userId,
-                    memberName: member.name,
-                    teamId: payload.teamId,
-                    stageId: payload.stageId,
-                    totalPoints: increment(perMemberChange),
-                    updatedAt: serverTimestamp(),
-                }, { merge: true });
-            })
-        );
+        for (const member of payload.members) {
+            // Score document for this member
+            const scoreRef = doc(collection(db, 'scores'));
+            ops.push((batch) => batch.set(scoreRef, {
+                teamId: payload.teamId,
+                taskId: payload.taskId,
+                points: perMemberShare,
+                type: payload.scoreType,
+                targetType: 'member' as TargetType,
+                source: payload.source,
+                registeredBy: payload.registeredBy,
+                registeredByName: payload.registeredByName,
+                stageId: payload.stageId,
+                memberKey: member.key,
+                memberUserId: member.userId,
+                memberName: member.name,
+                applyToTeamTotal: false,
+                timestamp: serverTimestamp(),
+                syncedAt: serverTimestamp(),
+                pendingSync: false,
+            }));
 
-        const failedCount = memberResults.filter(r => r.status === 'rejected').length;
-        memberResults.forEach((r, i) => {
-            if (r.status === 'rejected') {
-                console.error(`member_stats failed [${payload.members[i]?.key}]:`, (r as PromiseRejectedResult).reason);
-            }
-        });
+            // member_stats update for this member
+            const statRef = doc(db, 'member_stats', member.key);
+            ops.push((batch) => batch.set(statRef, {
+                memberKey: member.key,
+                memberUserId: member.userId,
+                memberName: member.name,
+                teamId: payload.teamId,
+                stageId: payload.stageId,
+                totalPoints: increment(perMemberChange),
+                updatedAt: serverTimestamp(),
+            }, { merge: true }));
+        }
+
+        try {
+            await commitInChunks(ops);
+        } catch (err: any) {
+            const isPermissionDenied = err?.code === 'permission-denied';
+            console.error('registerTeamScore member batch failed:', err);
+            return {
+                successCount: 0,
+                failedCount: memberCount,
+                hasPermissionDenied: isPermissionDenied,
+                offline: false,
+                perMemberShare: Math.round(perMemberShare),
+            };
+        }
 
         return {
-            successCount: memberCount - failedCount,
-            failedCount,
+            successCount: memberCount,
+            failedCount: 0,
             hasPermissionDenied: false,
             offline: false,
             perMemberShare: Math.round(perMemberShare),
@@ -215,60 +250,78 @@ export async function registerMemberScores(payload: MemberScorePayload): Promise
         return { successCount: 0, failedCount: 0, hasPermissionDenied: false, offline: true };
     }
 
-    const results = await Promise.allSettled(
-        payload.members.map(async (member) => {
-            await addDoc(collection(db, 'scores'), {
-                teamId: payload.teamId,
-                taskId: payload.taskId,
-                points: Math.abs(payload.points),
-                type: payload.scoreType,
-                targetType: 'member',
-                source: payload.source,
-                registeredBy: payload.registeredBy,
-                registeredByName: payload.registeredByName,
-                stageId: payload.stageId,
-                memberKey: member.key,
-                memberUserId: member.userId,
-                memberName: member.name,
-                applyToTeamTotal: true,
-                timestamp: serverTimestamp(),
-                syncedAt: serverTimestamp(),
-                pendingSync: false,
-            });
+    // Build batch operations for score documents + member_stats updates
+    const ops: BatchOp[] = [];
 
-            await setDoc(doc(db, 'member_stats', member.key), {
-                memberKey: member.key,
-                memberUserId: member.userId,
-                memberName: member.name,
-                teamId: payload.teamId,
-                stageId: payload.stageId,
-                totalPoints: increment(pointChange),
-                updatedAt: serverTimestamp(),
-            }, { merge: true });
+    for (const member of payload.members) {
+        // Score document
+        const scoreRef = doc(collection(db, 'scores'));
+        ops.push((batch) => batch.set(scoreRef, {
+            teamId: payload.teamId,
+            taskId: payload.taskId,
+            points: Math.abs(payload.points),
+            type: payload.scoreType,
+            targetType: 'member' as TargetType,
+            source: payload.source,
+            registeredBy: payload.registeredBy,
+            registeredByName: payload.registeredByName,
+            stageId: payload.stageId,
+            memberKey: member.key,
+            memberUserId: member.userId,
+            memberName: member.name,
+            applyToTeamTotal: true,
+            timestamp: serverTimestamp(),
+            syncedAt: serverTimestamp(),
+            pendingSync: false,
+        }));
 
-            logActivity({
-                kind: 'score',
-                teamId: payload.teamId,
-                teamName: payload.teamName,
-                taskId: payload.taskId,
-                taskTitle: payload.taskTitle,
-                points: Math.abs(payload.points),
-                scoreType: payload.scoreType,
-                targetType: 'member',
-                memberKey: member.key,
-                memberUserId: member.userId,
-                memberName: member.name,
-                stageId: payload.stageId,
-                actorId: payload.registeredBy,
-                actorName: payload.registeredByName,
-                actorRole: payload.actorRole,
-            });
-        })
-    );
+        // member_stats update
+        const statRef = doc(db, 'member_stats', member.key);
+        ops.push((batch) => batch.set(statRef, {
+            memberKey: member.key,
+            memberUserId: member.userId,
+            memberName: member.name,
+            teamId: payload.teamId,
+            stageId: payload.stageId,
+            totalPoints: increment(pointChange),
+            updatedAt: serverTimestamp(),
+        }, { merge: true }));
+    }
 
-    const failures = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
-    const failedCount = failures.length;
+    let failedCount = 0;
+    let hasPermissionDenied = false;
+
+    try {
+        await commitInChunks(ops);
+    } catch (err: any) {
+        hasPermissionDenied = err?.code === 'permission-denied';
+        console.error('registerMemberScores batch failed:', err);
+        // If entire batch failed, treat all as failed
+        failedCount = payload.members.length;
+    }
+
     const successCount = payload.members.length - failedCount;
+
+    // Log activity for each member (fire-and-forget, doesn't affect user-facing data)
+    for (const member of payload.members) {
+        logActivity({
+            kind: 'score',
+            teamId: payload.teamId,
+            teamName: payload.teamName,
+            taskId: payload.taskId,
+            taskTitle: payload.taskTitle,
+            points: Math.abs(payload.points),
+            scoreType: payload.scoreType,
+            targetType: 'member',
+            memberKey: member.key,
+            memberUserId: member.userId,
+            memberName: member.name,
+            stageId: payload.stageId,
+            actorId: payload.registeredBy,
+            actorName: payload.registeredByName,
+            actorRole: payload.actorRole,
+        });
+    }
 
     // Update team total once for all successful member scores
     if (successCount > 0) {
@@ -276,13 +329,6 @@ export async function registerMemberScores(payload: MemberScorePayload): Promise
             totalPoints: increment(pointChange * successCount),
         });
     }
-
-    const hasPermissionDenied = failures.some(r =>
-        r.reason &&
-        typeof r.reason === 'object' &&
-        'code' in r.reason &&
-        (r.reason as { code?: unknown }).code === 'permission-denied'
-    );
 
     return {
         successCount,

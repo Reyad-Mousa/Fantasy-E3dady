@@ -8,6 +8,7 @@ import {
     addTeamMember,
     removeTeamMember,
     createAuditLog,
+    moveTeamMember,
 } from '@/services/teamsService';
 
 export interface TeamData {
@@ -207,12 +208,47 @@ export function useTeamsData(user: any, showToast: (msg: string, type?: 'success
         }
     };
 
+    const moveMember = async (
+        fromTeam: TeamData,
+        toTeam: TeamData,
+        memberName: string,
+        memberUserId?: string | null,
+        onSuccess?: () => void
+    ) => {
+        try {
+            await moveTeamMember({
+                memberName,
+                fromTeam: { id: fromTeam.id, members: fromTeam.members || [], stageId: fromTeam.stageId },
+                toTeam: { id: toTeam.id, members: toTeam.members || [], stageId: toTeam.stageId },
+                memberUserId,
+            });
+            await createAuditLog({
+                operation: 'update',
+                entityType: 'member',
+                entityId: `${toTeam.id}:${memberName.trim()}`,
+                entityName: memberName.trim(),
+                stageId: resolveStageId(toTeam.stageId),
+                details: `نُقل من الفريق: "${fromTeam.name}" إلى الفريق: "${toTeam.name}"`,
+                actorId: user.uid,
+                actorName: user.name || null,
+                actorEmail: user.email || null,
+                actorRole: user.role || null,
+            });
+            showToast(`تم نقل "${memberName.trim()}" إلى فريق "${toTeam.name}" ✅`);
+            onSuccess?.();
+        } catch (err: any) {
+            console.error('moveMember error:', err);
+            showToast(`فشل في نقل العضو: ${err?.message || 'خطأ غير معروف'}`, 'error');
+        }
+    };
+
     return {
         teams,
         loading,
         saveTeam,
         deleteTeam,
         addMember,
-        removeMember
+        removeMember,
+        moveMember,
     };
 }

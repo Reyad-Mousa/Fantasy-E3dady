@@ -320,7 +320,7 @@ export default function SuperAdminPanel({ onBack }: { onBack?: () => void }) {
                 return stat;
             };
 
-            // 5. Distribution pass: Build accurate totals
+            // 5. Distribution pass: Build accurate MEMBER totals
             let processedCount = 0;
             for (const score of allScores) {
                 // Robust point extraction
@@ -332,12 +332,7 @@ export default function SuperAdminPanel({ onBack }: { onBack?: () => void }) {
                 if (pts === 0) continue;
                 processedCount++;
 
-                // Team Totals: assume true if missing
                 const teamId = score.teamId || score.team_id;
-                const shouldApplyToTeam = teamId && score.applyToTeamTotal !== false;
-                if (shouldApplyToTeam) {
-                    teamTotals[teamId] = (teamTotals[teamId] || 0) + pts;
-                }
 
                 // Member Totals
                 const memberKey = score.memberKey || score.member_key;
@@ -406,8 +401,16 @@ export default function SuperAdminPanel({ onBack }: { onBack?: () => void }) {
                 }
             }
 
+            // 6. Derive team totals from member stats (guarantees team.totalPoints == Σ member_stats)
+            for (const stat of Object.values(memberStatsMap)) {
+                const tid = asNonEmptyString(stat.teamId);
+                if (tid && teamTotals[tid] !== undefined) {
+                    teamTotals[tid] = (teamTotals[tid] || 0) + (stat.totalPoints || 0);
+                }
+            }
+
             let overallComputedTeamPoints = 0;
-            // 6. Batch update Firestore in chunks of 400
+            // 7. Batch update Firestore in chunks of 400
             const updates = [
                 ...Object.entries(teamTotals).map(([id, total]) => {
                     overallComputedTeamPoints += total;

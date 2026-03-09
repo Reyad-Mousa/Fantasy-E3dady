@@ -1,8 +1,37 @@
-import { collection, addDoc, doc, getDoc, getDocs, increment, serverTimestamp, setDoc, updateDoc, query, where } from 'firebase/firestore';
+import {
+    addDoc,
+    collection,
+    doc,
+    getDoc,
+    getDocs,
+    increment,
+    query,
+    serverTimestamp,
+    updateDoc,
+    where,
+    writeBatch,
+} from 'firebase/firestore';
 import { db } from './firebase';
 import { getUnsyncedScores, markScoreSynced, type PendingScore } from './offlineDb';
 import { logActivity } from './activityLogger';
 import { buildMemberKey, normalizeMemberName } from './memberKeys';
+
+// ── Batch helper ───────────────────────────────────────────────────────────
+
+const BATCH_CHUNK_SIZE = 400;
+
+type BatchOp = (batch: ReturnType<typeof writeBatch>) => void;
+
+async function commitInChunks(ops: BatchOp[]): Promise<void> {
+    for (let i = 0; i < ops.length; i += BATCH_CHUNK_SIZE) {
+        const chunk = ops.slice(i, i + BATCH_CHUNK_SIZE);
+        const batch = writeBatch(db);
+        for (const op of chunk) op(batch);
+        await batch.commit();
+    }
+}
+
+// ── Sync ───────────────────────────────────────────────────────────────────
 
 export async function syncPendingScores(): Promise<number> {
     const pending = await getUnsyncedScores();
@@ -45,10 +74,10 @@ export async function syncPendingScores(): Promise<number> {
                 });
             }
 
-            // If it's a team score, distribute to members unless explicitly disabled
+            // If it's a team score, distribute to members via batched writes
             if ((score.targetType ?? 'team') === 'team' && score.distributeToMembers !== false) {
                 try {
-                    // Fetch real users belonging to the team
+                    // Fetch users belonging to the team
                     const usersSnap = await getDocs(query(collection(db, 'users'), where('teamId', '==', score.teamId)));
                     const userMembers = usersSnap.docs.map(d => ({ id: d.id, ...d.data() } as any));
 
@@ -57,7 +86,7 @@ export async function syncPendingScores(): Promise<number> {
                     const teamData = teamDoc.data();
 
                     const seen = new Set<string>();
-                    const availableMembers: { key: string, userId: string | null, name: string }[] = [];
+                    const availableMembers: { key: string; userId: string | null; name: string }[] = [];
 
                     for (const u of userMembers) {
                         const name = String(u.name || u.displayName || '').trim();
@@ -88,26 +117,28 @@ export async function syncPendingScores(): Promise<number> {
                         const perMemberShare = Math.abs(score.points) / memberCount;
                         const perMemberChange = score.type === 'earn' ? perMemberShare : -perMemberShare;
 
-                        await Promise.allSettled(
-                            availableMembers.map(member =>
-                                setDoc(doc(db, 'member_stats', member.key), {
-                                    memberKey: member.key,
-                                    memberUserId: member.userId,
-                                    memberName: member.name,
-                                    teamId: score.teamId,
-                                    stageId,
-                                    totalPoints: increment(perMemberChange),
-                                    updatedAt: serverTimestamp(),
-                                }, { merge: true })
-                            )
+                        const ops: BatchOp[] = availableMembers.map(member => (batch) =>
+                            batch.set(doc(db, 'member_stats', member.key), {
+                                memberKey: member.key,
+                                memberUserId: member.userId,
+                                memberName: member.name,
+                                teamId: score.teamId,
+                                stageId,
+                                totalPoints: increment(perMemberChange),
+                                updatedAt: serverTimestamp(),
+                            }, { merge: true })
                         );
+
+                        await commitInChunks(ops);
                     }
                 } catch (e) {
-                    console.error('Failed to distribute team points offline sync', e);
+                    console.error('Failed to distribute team points during offline sync', e);
                 }
             } else if ((score.targetType ?? 'team') === 'member' && score.memberKey) {
-                // It's an individual member score
-                await setDoc(doc(db, 'member_stats', score.memberKey), {
+                // Individual member score
+                const statRef = doc(db, 'member_stats', score.memberKey);
+                const statBatch = writeBatch(db);
+                statBatch.set(statRef, {
                     memberKey: score.memberKey,
                     memberUserId: score.memberUserId ?? null,
                     memberName: score.memberName ?? 'غير معروف',
@@ -116,11 +147,13 @@ export async function syncPendingScores(): Promise<number> {
                     totalPoints: increment(pointChange),
                     updatedAt: serverTimestamp(),
                 }, { merge: true });
+                await statBatch.commit();
             }
 
             if (score.id !== undefined) {
                 await markScoreSynced(score.id);
             }
+
             // Log synced score to activities collection
             logActivity({
                 kind: 'score',
@@ -137,6 +170,7 @@ export async function syncPendingScores(): Promise<number> {
                 actorId: score.registeredBy,
                 actorName: score.registeredByName ?? null,
             });
+
             synced++;
         } catch (err) {
             console.error('Failed to sync score:', err);

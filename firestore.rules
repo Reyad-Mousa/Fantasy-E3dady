@@ -92,7 +92,7 @@ service cloud.firestore {
 
 
     function isValidAuditOperation(operation) {
-      return operation == 'create' || operation == 'delete';
+      return operation == 'create' || operation == 'delete' || operation == 'update';
     }
 
     function isValidAuditEntityType(entityType) {
@@ -123,7 +123,8 @@ service cloud.firestore {
         request.auth.uid == userId ||
         ((isAdmin() || isLeader()) && userDocInMyStage(resource.data));
       allow create: if isAuthenticated() && request.auth.uid == userId;
-      allow update, delete: if isSuperAdmin() || request.auth.uid == userId || (isAdmin() && isSameStage(resource.data.stageId) && isSameStage(request.resource.data.stageId));
+      allow update: if isSuperAdmin() || request.auth.uid == userId || ((isAdmin() || isLeader()) && userDocInMyStage(resource.data) && userDocInMyStage(request.resource.data));
+      allow delete: if isSuperAdmin() || request.auth.uid == userId || ((isAdmin() || isLeader()) && userDocInMyStage(resource.data));
     }
 
     match /teams/{teamId} {
@@ -159,7 +160,7 @@ service cloud.firestore {
           canCreateStageScoreForTeam(request.resource.data.teamId, request.resource.data.stageId) &&
           isValidScorePayload())
       );
-      allow update, delete: if isAuthenticated() && (isSuperAdmin() || (isAdmin() && isSameStage(resource.data.stageId)));
+      allow update, delete: if isAuthenticated() && (isSuperAdmin() || ((isAdmin() || isLeader()) && isSameStage(resource.data.stageId)));
     }
 
     match /member_stats/{memberKey} {
@@ -171,7 +172,7 @@ service cloud.firestore {
           isSameStage(resource.data.stageId) &&
           isSameStage(request.resource.data.stageId))
       );
-      allow delete: if isAuthenticated() && (isSuperAdmin() || (isAdmin() && isSameStage(resource.data.stageId)));
+      allow delete: if isAuthenticated() && (isSuperAdmin() || ((isAdmin() || isLeader()) && isSameStage(resource.data.stageId)));
     }
 
     match /logs/{logId} {
