@@ -149,7 +149,15 @@ export default function TeamsPage({ onBack }: { onBack?: () => void }) {
 
                     // Add member rows
                     if (team.members && team.members.length > 0) {
-                        team.members.forEach(member => {
+                        const sortedMembers = [...team.members].sort((a, b) => {
+                            const aKey = buildMemberKey({ teamId: team.id, memberName: a });
+                            const bKey = buildMemberKey({ teamId: team.id, memberName: b });
+                            const aPts = memberStats[aKey] || 0;
+                            const bPts = memberStats[bKey] || 0;
+                            return bPts - aPts; // Sort descending
+                        });
+
+                        sortedMembers.forEach(member => {
                             const mKey = buildMemberKey({ teamId: team.id, memberName: member });
                             const pts = memberStats[mKey] || 0;
                             sheetData.push({

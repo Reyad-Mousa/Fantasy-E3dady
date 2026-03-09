@@ -228,7 +228,7 @@ export function canViewAllTeams(role: Role): boolean {
 }
 
 export function canExportReports(role: Role): boolean {
-  return role === 'super_admin';
+  return role === 'super_admin' || role === 'admin' || role === 'leader';
 }
 
 export function canManageUsers(role: Role): boolean {

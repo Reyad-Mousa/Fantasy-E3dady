@@ -23,19 +23,39 @@ export interface TeamData {
 
 export function useTeamsData(user: any, showToast: (msg: string, type?: 'success' | 'error' | 'warning' | 'info') => void) {
     const [teams, setTeams] = useState<TeamData[]>([]);
+    const [memberStats, setMemberStats] = useState<Record<string, number>>({});
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
         if (!user) return;
-        const q = (user.role === 'admin' || user.role === 'leader') && user.stageId
+        const teamsQuery = (user.role === 'admin' || user.role === 'leader') && user.stageId
             ? query(collection(db, 'teams'), where('stageId', '==', user.stageId))
             : collection(db, 'teams');
 
-        const unsub = onSnapshot(q, snap => {
+        const unsubTeams = onSnapshot(teamsQuery, snap => {
             setTeams(snap.docs.map(d => ({ id: d.id, ...d.data() } as TeamData)));
             setLoading(false);
         });
-        return unsub;
+
+        const statsQuery = (user.role === 'admin' || user.role === 'leader') && user.stageId
+            ? query(collection(db, 'member_stats'), where('stageId', '==', user.stageId))
+            : collection(db, 'member_stats');
+
+        const unsubStats = onSnapshot(statsQuery, snap => {
+            const stats: Record<string, number> = {};
+            snap.docs.forEach(d => {
+                const data = d.data();
+                if (data.memberKey) {
+                    stats[data.memberKey] = data.totalPoints || 0;
+                }
+            });
+            setMemberStats(stats);
+        });
+
+        return () => {
+            unsubTeams();
+            unsubStats();
+        };
     }, [user]);
 
     const resolveStageId = (stageId?: string | null) => {
@@ -244,6 +264,7 @@ export function useTeamsData(user: any, showToast: (msg: string, type?: 'success
 
     return {
         teams,
+        memberStats,
         loading,
         saveTeam,
         deleteTeam,
