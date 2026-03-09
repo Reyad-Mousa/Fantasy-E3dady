@@ -1,20 +1,21 @@
 import { useState } from 'react';
-import { useAuth, canCreateTeams } from '@/context/AuthContext';
+import { useAuth, canCreateTeams, canExportReports } from '@/context/AuthContext';
 import { useToast, SectionHeader, EmptyState, ConfirmModal } from './ui/SharedUI';
 import { motion, AnimatePresence } from 'motion/react';
-import { Plus, Edit3, Trash2, X, Users, Trophy, UserPlus, UserMinus, ArrowLeftRight } from 'lucide-react';
+import { Plus, Edit3, Trash2, X, Users, Trophy, UserPlus, UserMinus, ArrowLeftRight, Download } from 'lucide-react';
 import StageBadge from './StageBadge';
 import StageFilterBar, { FilterValue } from './StageFilterBar';
 import MemberScoreDetailsModal, { type MemberDetailsTarget } from './MemberScoreDetailsModal';
-import { STAGES_LIST } from '@/config/stages';
+import { STAGES_LIST, STAGES } from '@/config/stages';
 import { useTeamsData, type TeamData } from '@/hooks/useTeamsData';
 import { buildMemberKey } from '@/services/memberKeys';
+import * as XLSX from 'xlsx-js-style';
 
 export default function TeamsPage({ onBack }: { onBack?: () => void }) {
     const { user } = useAuth();
     const { showToast } = useToast();
 
-    const { teams, loading, saveTeam, deleteTeam, addMember, removeMember, moveMember } = useTeamsData(user, showToast);
+    const { teams, memberStats, loading, saveTeam, deleteTeam, addMember, removeMember, moveMember } = useTeamsData(user, showToast);
 
     const [stageFilter, setStageFilter] = useState<FilterValue>('all');
 
@@ -99,6 +100,137 @@ export default function TeamsPage({ onBack }: { onBack?: () => void }) {
         setIsMoving(false);
     };
 
+    const handleExportTeamsReport = () => {
+        try {
+            const TEAM_COLORS = [
+                "FFE6E6", // Light Red
+                "E6FFE6", // Light Green
+                "E6E6FF", // Light Blue
+                "FFFFE6", // Light Yellow
+                "FFE6FF", // Light Magenta
+                "E6FFFF", // Light Cyan
+                "FFF0E6", // Light Orange
+                "F0E6FF"  // Light Purple
+            ];
+            const wb = XLSX.utils.book_new();
+
+            // Apply current stage filter to teams
+            const teamsToExport = stageFilter === 'all'
+                ? teams
+                : teams.filter(t => t.stageId === stageFilter);
+
+            // Group by stage for better organization
+            const stages = Array.from(new Set(teamsToExport.map(t => t.stageId))).filter(Boolean).sort();
+
+            if (stages.length === 0) {
+                showToast('لا توجد بيانات لتصديرها', 'warning');
+                return;
+            }
+
+            stages.forEach(sId => {
+                const stageName = STAGES[sId as keyof typeof STAGES]?.name || sId;
+                const stageTeams = teamsToExport.filter(t => t.stageId === sId);
+                const sheetData: any[] = [];
+                const rowGroups: { start: number, end: number, colorIndex: number }[] = [];
+
+                let currentRowIndex = 1; // Header row is 0, so first data row is 1
+
+                stageTeams.forEach((team, tIdx) => {
+                    const groupStart = currentRowIndex;
+
+                    // Add team header row
+                    sheetData.push({
+                        'الفريق': team.name,
+                        'إجمالي النقاط': Math.round(team.totalPoints || 0),
+                        'اسم العضو': '---',
+                        'نقاط العضو': '---'
+                    });
+                    currentRowIndex++;
+
+                    // Add member rows
+                    if (team.members && team.members.length > 0) {
+                        team.members.forEach(member => {
+                            const mKey = buildMemberKey({ teamId: team.id, memberName: member });
+                            const pts = memberStats[mKey] || 0;
+                            sheetData.push({
+                                'الفريق': '',
+                                'إجمالي النقاط': '',
+                                'اسم العضو': member,
+                                'نقاط العضو': Math.round(pts)
+                            });
+                            currentRowIndex++;
+                        });
+                    } else {
+                        sheetData.push({
+                            'الفريق': '',
+                            'إجمالي النقاط': '',
+                            'اسم العضو': 'لا يوجد أعضاء',
+                            'نقاط العضو': '---'
+                        });
+                        currentRowIndex++;
+                    }
+
+                    rowGroups.push({ start: groupStart, end: currentRowIndex - 1, colorIndex: tIdx % TEAM_COLORS.length });
+
+                    // Empty separator row
+                    sheetData.push({});
+                    currentRowIndex++;
+                });
+
+                const ws = XLSX.utils.json_to_sheet(sheetData);
+
+                // Set RTL for the sheet
+                ws['!dir'] = 'rtl';
+
+                // Adjust column widths
+                ws['!cols'] = [
+                    { wch: 20 }, // الفريق
+                    { wch: 15 }, // إجمالي النقاط
+                    { wch: 25 }, // اسم العضو
+                    { wch: 15 }  // نقاط العضو
+                ];
+
+                // Apply styles to headers
+                for (let C = 0; C < 4; ++C) {
+                    const cellRef = XLSX.utils.encode_cell({ r: 0, c: C });
+                    if (!ws[cellRef]) ws[cellRef] = { t: 's', v: '' };
+                    ws[cellRef].s = {
+                        fill: { fgColor: { rgb: "E0E0E0" } },
+                        font: { bold: true },
+                        alignment: { horizontal: "center" }
+                    };
+                }
+
+                // Apply styles to team rows
+                rowGroups.forEach(group => {
+                    const color = TEAM_COLORS[group.colorIndex];
+                    for (let R = group.start; R <= group.end; ++R) {
+                        for (let C = 0; C < 4; ++C) {
+                            const cellRef = XLSX.utils.encode_cell({ r: R, c: C });
+                            if (!ws[cellRef]) ws[cellRef] = { t: 's', v: '' };
+
+                            ws[cellRef].s = {
+                                fill: { fgColor: { rgb: color } },
+                                alignment: { horizontal: "center" },
+                                font: R === group.start ? { bold: true } : {}
+                            };
+                        }
+                    }
+                });
+
+                const cleanSheetName = (stageName || 'Unknown').substring(0, 31).replace(/[\[\]\*\\\/\?]/g, '');
+                XLSX.utils.book_append_sheet(wb, ws, cleanSheetName);
+            });
+
+            const fileName = `teams-report-${new Date().toISOString().split('T')[0]}.xlsx`;
+            XLSX.writeFile(wb, fileName);
+            showToast('تم تصدير التقرير بنجاح ✅');
+        } catch (err) {
+            console.error('Export error:', err);
+            showToast('فشل في تصدير التقرير', 'error');
+        }
+    };
+
     if (!user || !canCreateTeam) {
         return (
             <div dir="rtl" className="glass-card p-12 text-center">
@@ -149,6 +281,16 @@ export default function TeamsPage({ onBack }: { onBack?: () => void }) {
                         <span>عدد الفرق:</span>
                         <span className="text-text-primary bg-primary/20 text-primary-light border-primary/50 flex items-center justify-center w-6 h-6 rounded-full">{filteredTeams.length}</span>
                     </div>
+                    {canExportReports(user.role) && (
+                        <button
+                            onClick={handleExportTeamsReport}
+                            className="btn btn-ghost text-sm w-full sm:w-auto"
+                            title="تصدير بيانات الفرق"
+                        >
+                            <Download className="w-4 h-4" />
+                            تصدير
+                        </button>
+                    )}
                     {canCreateTeam && (
                         <button onClick={() => setShowTeamModal(true)} className="btn btn-primary text-sm w-full sm:w-auto">
                             <Plus className="w-4 h-4" />
