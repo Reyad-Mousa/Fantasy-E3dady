@@ -1,4 +1,3 @@
-import { motion } from 'motion/react';
 import { Trophy, Star } from 'lucide-react';
 import StageBadge from './StageBadge';
 
@@ -9,9 +8,7 @@ interface HomeHeroSectionProps {
 
 export function HomeHeroSection({ user, animationsEnabled }: HomeHeroSectionProps) {
     return (
-        <motion.div
-            initial={animationsEnabled ? { opacity: 0, scale: 0.98 } : false}
-            animate={animationsEnabled ? { opacity: 1, scale: 1 } : undefined}
+        <div
             className="relative overflow-hidden bg-surface-card rounded-3xl p-8 sm:p-12 border border-white/5 border-b-border shadow-2xl"
         >
             <div className="absolute top-0 left-0 w-1/2 h-full bg-gradient-to-r from-primary/10 to-transparent pointer-events-none" />
@@ -38,6 +35,6 @@ export function HomeHeroSection({ user, animationsEnabled }: HomeHeroSectionProp
                     <Trophy className="w-full h-full text-accent/80 relative z-10 drop-shadow-[0_0_20px_rgba(245,158,11,0.5)]" />
                 </div>
             </div>
-        </motion.div>
+        </div>
     );
 }

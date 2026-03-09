@@ -17,10 +17,11 @@
   --color-surface-card: #252250;
   --color-bg: #0f0e2a;
   --color-bg-light: #161438;
-  --color-text-primary: #f1f5f9;
-  --color-text-secondary: #94a3b8;
-  --color-text-muted: #64748b;
-  --color-border: #334155;
+  /* Boosted contrast for WCAG 4.5:1 on dark background */
+  --color-text-primary: #f8fafc;
+  --color-text-secondary: #cbd5e1;
+  --color-text-muted: #9ca3af;
+  --color-border: #475569;
   --color-glass: rgba(99, 102, 241, 0.08);
   --color-glass-border: rgba(99, 102, 241, 0.15);
 }

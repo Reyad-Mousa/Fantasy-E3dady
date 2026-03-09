@@ -1,5 +1,4 @@
 import { useState } from 'react';
-import * as XLSX from 'xlsx';
 import { db } from '@/services/firebase';
 import { doc, writeBatch, collection, serverTimestamp, increment, arrayUnion } from 'firebase/firestore';
 import { TeamData } from './useTeamsData';
@@ -42,6 +41,7 @@ export function useExcelImport(
     const parseExcel = async (file: File, currentStageFilter: string) => {
         try {
             const data = await file.arrayBuffer();
+            const XLSX = await import('xlsx');
             const workbook = XLSX.read(data);
 
             const newTeams: ImportPreviewData['newTeams'] = [];

@@ -91,14 +91,6 @@ export default defineConfig(({ mode }) => {
                 },
               },
             },
-            {
-              urlPattern: /^https:\/\/firestore\.googleapis\.com\/.*/i,
-              handler: 'NetworkFirst',
-              options: {
-                cacheName: 'firestore-cache',
-                networkTimeoutSeconds: 10,
-              },
-            },
           ],
         },
       }),
@@ -112,13 +104,42 @@ export default defineConfig(({ mode }) => {
       },
     },
     build: {
+      minify: 'terser',
+      sourcemap: false,
       chunkSizeWarningLimit: 1000,
       rollupOptions: {
         output: {
-          manualChunks: {
-            firebase: ['firebase/app', 'firebase/auth', 'firebase/firestore'],
-            ui: ['motion/react', 'motion', 'recharts', 'lucide-react'],
-            xlsx: ['xlsx'],
+          manualChunks(id) {
+            if (id.includes('node_modules/xlsx-js-style')) {
+              return 'xlsx-style';
+            }
+            if (id.includes('node_modules/xlsx')) {
+              return 'xlsx';
+            }
+            if (id.includes('node_modules/recharts')) {
+              return 'charts';
+            }
+            if (id.includes('node_modules/firebase')) {
+              return 'firebase';
+            }
+            if (
+              id.includes('/src/components/HomeStageStatsChart') ||
+              id.includes('/src/components/HomeMassTasks') ||
+              id.includes('/src/components/RoleActions') ||
+              id.includes('/src/components/TeamMembersModal') ||
+              id.includes('/src/components/MemberScoreDetailsModal')
+            ) {
+              return 'home-deferred';
+            }
+            if (
+              id.includes('/src/components/SuperAdminPanel') ||
+              id.includes('/src/components/AdminOverviewTab') ||
+              id.includes('/src/components/AdminTeamsTab') ||
+              id.includes('/src/components/AdminUsersTab') ||
+              id.includes('/src/components/AdminReportsTab')
+            ) {
+              return 'admin';
+            }
           },
         },
       },

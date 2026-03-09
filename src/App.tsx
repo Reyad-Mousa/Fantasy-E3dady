@@ -4,7 +4,6 @@ import { ToastProvider, OnlineStatusBar, FullPageLoading } from './components/ui
 import Navbar from './components/Navbar';
 import LoginModal from './components/LoginModal';
 import Home from './components/Home';
-import { motion, AnimatePresence } from 'motion/react';
 import { Trophy } from 'lucide-react';
 
 // Lazy-loaded pages — only downloaded when the user navigates to them

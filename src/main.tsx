@@ -1,5 +1,6 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
+import { registerSW } from 'virtual:pwa-register';
 import App from './App.tsx';
 import './index.css';
 
@@ -9,16 +10,14 @@ createRoot(document.getElementById('root')!).render(
   </StrictMode>,
 );
 
-// ── PWA: auto-reload on new deploy ──
-if ('serviceWorker' in navigator) {
-  import('workbox-window').then(({ Workbox }) => {
-    const wb = new Workbox('/sw.js');
-
-    // When the new SW takes control, reload the page automatically
-    wb.addEventListener('controlling', () => {
-      window.location.reload();
-    });
-
-    wb.register();
+if ('serviceWorker' in navigator && import.meta.env.PROD) {
+  const updateSW = registerSW({
+    immediate: true,
+    onNeedRefresh() {
+      updateSW(true);
+    },
+    onRegisteredSW(_swUrl, registration) {
+      registration?.update();
+    },
   });
 }

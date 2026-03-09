@@ -172,8 +172,9 @@ export function ConfirmModal({ isOpen, title, message, onConfirm, onCancel, conf
 export function SyncBadge({ count }: { count: number }) {
     if (count === 0) return null;
     return (
-        <span className="badge badge-pending">
-            ⚠️ {count} في انتظار المزامنة
+        <span className="badge badge-pending max-w-[9rem] sm:max-w-none whitespace-nowrap">
+            <span className="sm:hidden">⚠️ {count}</span>
+            <span className="hidden sm:inline">⚠️ {count} في انتظار المزامنة</span>
         </span>
     );
 }

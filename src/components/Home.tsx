@@ -1,39 +1,63 @@
-import { useState, useEffect, useMemo, useRef } from 'react';
-import { collection, query, where, onSnapshot, limit } from 'firebase/firestore';
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
+import { collection, limit, onSnapshot, query, where } from 'firebase/firestore';
 import { db } from '@/services/firebase';
 import { useAuth } from '@/context/AuthContext';
-import { StatsCard } from './ui/SharedUI';
-import { Trophy, Users, ListTodo, BarChart3, Star, Target, Award, ArrowLeft, Medal, X, ChevronLeft } from 'lucide-react';
-import StageBadge from './StageBadge';
-import MemberScoreDetailsModal, { type MemberDetailsTarget } from './MemberScoreDetailsModal';
-import { motion, AnimatePresence } from 'motion/react';
+import type { MemberDetailsTarget } from './MemberScoreDetailsModal';
 import { STAGES_LIST } from '@/config/stages';
-import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Cell, Tooltip } from 'recharts';
 import { usePerfProfile } from '@/hooks/usePerfProfile';
+import { useDeferredRender } from '@/hooks/useDeferredRender';
 import { buildMemberKey } from '@/services/memberKeys';
 import { mergeTeamMemberTotals } from '@/services/memberTotals';
 
 import { HomeHeroSection } from './HomeHeroSection';
-import { RoleActions } from './RoleActions';
-import { TeamMembersModal } from './TeamMembersModal';
-import { HomeStageStatsChart } from './HomeStageStatsChart';
 import { HomeSidebarTeams } from './HomeSidebarTeams';
-import { HomeMassTasks } from './HomeMassTasks';
+
+const HomeStageStatsChart = lazy(() =>
+  import('./HomeStageStatsChart').then((module) => ({ default: module.HomeStageStatsChart })),
+);
+const HomeMassTasks = lazy(() =>
+  import('./HomeMassTasks').then((module) => ({ default: module.HomeMassTasks })),
+);
+const RoleActions = lazy(() =>
+  import('./RoleActions').then((module) => ({ default: module.RoleActions })),
+);
+const TeamMembersModal = lazy(() =>
+  import('./TeamMembersModal').then((module) => ({ default: module.TeamMembersModal })),
+);
+const MemberScoreDetailsModal = lazy(() => import('./MemberScoreDetailsModal'));
 
 interface HomeProps {
   onNavigate?: (tab: string, taskId?: string) => void;
 }
 
+const toUnixMs = (value: unknown): number => {
+  if (!value) return 0;
+  if (typeof value === 'number') return value;
+  if (value instanceof Date) return value.getTime();
+  if (typeof value === 'string') {
+    const parsed = Date.parse(value);
+    return Number.isNaN(parsed) ? 0 : parsed;
+  }
+  if (typeof value === 'object' && value !== null) {
+    if ('toMillis' in value && typeof (value as { toMillis?: unknown }).toMillis === 'function') {
+      return (value as { toMillis: () => number }).toMillis();
+    }
+    if ('seconds' in value && typeof (value as { seconds?: unknown }).seconds === 'number') {
+      return (value as { seconds: number }).seconds * 1000;
+    }
+  }
+  return 0;
+};
+
 export default function Home({ onNavigate }: HomeProps) {
   const { user } = useAuth();
 
-  const [isMounted, setIsMounted] = useState(false);
-
   // ── Raw Firestore state (updated by independent real-time listeners) ──────
   const [teamsData, setTeamsData] = useState<any[]>([]);
-  const [tasksCount, setTasksCount] = useState<number | null>(null);
-  const [publicTasks, setPublicTasks] = useState<any[]>([]);
   const [massTasks, setMassTasks] = useState<any[]>([]);
+  const [liveReady, setLiveReady] = useState(false);
+  const [teamsReady, setTeamsReady] = useState(false);
+  const [massTasksReady, setMassTasksReady] = useState(false);
 
   // ── Team detail modal ─────────────────────────────────────────────────────
   const [selectedTeam, setSelectedTeam] = useState<any | null>(null);
@@ -46,60 +70,73 @@ export default function Home({ onNavigate }: HomeProps) {
   }>>([]);
   const [loadingMembers, setLoadingMembers] = useState(false);
   const [memberDetails, setMemberDetails] = useState<MemberDetailsTarget | null>(null);
-  const mobileChartContainerRef = useRef<HTMLDivElement | null>(null);
-  const [mobileChartSize, setMobileChartSize] = useState({ width: 0, height: 0 });
   const selectedTeamLive = useMemo(() => {
     if (!selectedTeam) return null;
     return teamsData.find(t => t.id === selectedTeam.id) || selectedTeam;
   }, [teamsData, selectedTeam]);
+  const deferredSections = useDeferredRender({ observe: true, timeoutMs: 900 });
+  const idleMassTasks = useDeferredRender({ enabled: !!user, timeoutMs: 700 });
+  const shouldLoadDeferredSections = deferredSections.isReady;
+  const shouldLoadMassTasks = idleMassTasks.isReady;
+
+  // Wait for first paint/idle before attaching Firestore listeners to reduce main-thread pressure.
+  useEffect(() => {
+    const idle = (window as any).requestIdleCallback || ((cb: () => void) => setTimeout(cb, 120));
+    const cancel = (window as any).cancelIdleCallback || clearTimeout;
+    const id = idle(() => setLiveReady(true));
+    return () => cancel(id);
+  }, []);
 
   // ── Listener 1: teams (raw docs) ──────────────────────────────────────────
   useEffect(() => {
+    if (!liveReady) return;
+    setTeamsReady(false);
     const unsub = onSnapshot(collection(db, 'teams'), snap => {
-      setTeamsData(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-    }, () => { });
-    return unsub;
-  }, []);
+      const orderedTeams = snap.docs
+        .map(d => ({ id: d.id, ...d.data() }))
+        .sort((a: any, b: any) => Number(b.totalPoints || 0) - Number(a.totalPoints || 0));
 
-  // ── Listener 2: active tasks count (logged-in users) ─────────────────────
-  useEffect(() => {
-    if (!user) return;
-    const unsub = onSnapshot(
-      query(collection(db, 'tasks'), where('status', '==', 'active')),
-      snap => setTasksCount(snap.size),
-    );
+      setTeamsData(orderedTeams);
+      setTeamsReady(true);
+    }, (err) => {
+      console.error('teams listener error', err);
+      setTeamsReady(true);
+    });
     return unsub;
-  }, [user]);
+  }, [liveReady]);
 
-  // ── Listener 3: active mass tasks (shortcut) ───────────────────────────
+  // ── Listener 2: active mass tasks (shortcut) ───────────────────────────
   useEffect(() => {
-    if (!user) {
+    if (!user || !shouldLoadMassTasks || !liveReady || !teamsReady) {
       setMassTasks([]);
+      setMassTasksReady(!user);
       return;
     }
+    setMassTasksReady(false);
+
     const unsub = onSnapshot(
-      query(collection(db, 'tasks'), where('status', '==', 'active'), where('type', '==', 'team')),
+      query(collection(db, 'tasks'), where('status', '==', 'active'), where('type', '==', 'team'), limit(80)),
       snap => {
         const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         const massOnly = data.filter((t: any) =>
           (t.title?.includes('قداس') || t.title?.includes('قداسس')) &&
           (!t.stageId || t.stageId === user.stageId || user.role === 'super_admin')
         );
+        massOnly.sort((a: any, b: any) => {
+          const bTime = toUnixMs(b.updatedAt ?? b.createdAt ?? b.created_at ?? b.date);
+          const aTime = toUnixMs(a.updatedAt ?? a.createdAt ?? a.created_at ?? a.date);
+          return bTime - aTime;
+        });
         setMassTasks(massOnly);
-      }
+        setMassTasksReady(true);
+      },
+      () => {
+        setMassTasks([]);
+        setMassTasksReady(true);
+      },
     );
     return unsub;
-  }, [user]);
-
-  // ── Listener 4: public task previews (guests only) ───────────────────────
-  useEffect(() => {
-    if (user) return;
-    const unsub = onSnapshot(
-      query(collection(db, 'tasks'), where('status', '==', 'active'), limit(4)),
-      snap => setPublicTasks(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
-    );
-    return unsub;
-  }, [user]);
+  }, [shouldLoadMassTasks, user, liveReady, teamsReady]);
 
   // ── Derived: stage statistics for chart + sidebar ─────────────────────────
   // Recomputes automatically whenever teamsData changes.
@@ -118,8 +155,7 @@ export default function Home({ onNavigate }: HomeProps) {
 
   // ── Derived: stats cards (rank / points / tasks / members) ───────────────
   const stats = useMemo(() => {
-    const tasks = tasksCount !== null ? tasksCount.toString() : '--';
-    const fallback = { rank: '--', points: '--', tasks, members: '--' };
+    const fallback = { rank: '--', points: '--', members: '--' };
     if (!user || teamsData.length === 0) return fallback;
 
     const teamsWithPoints = teamsData.map(t => ({
@@ -139,55 +175,19 @@ export default function Home({ onNavigate }: HomeProps) {
         return {
           rank: `#${myTeamIndex + 1}`,
           points: Math.round(Number(myTeam.computedPoints)).toString(),
-          tasks,
           members: myTeam.memberCount?.toString() || '0',
         };
       }
     } else {
       const totalPoints = teamsWithPoints.reduce((acc, t) => acc + t.computedPoints, 0);
       const totalMembers = teamsWithPoints.reduce((acc, t) => acc + (t.memberCount || 0), 0);
-      return { rank: `${teamsWithPoints.length}`, points: totalPoints.toString(), tasks, members: totalMembers.toString() };
+      return { rank: `${teamsWithPoints.length}`, points: totalPoints.toString(), members: totalMembers.toString() };
     }
 
     return fallback;
-  }, [user, teamsData, tasksCount]);
+  }, [user, teamsData]);
   const { isMobile, prefersLowMotion } = usePerfProfile();
   const animationsEnabled = !prefersLowMotion;
-
-  useEffect(() => {
-    setIsMounted(true);
-  }, []);
-
-  useEffect(() => {
-    if (!isMounted || !isMobile) {
-      setMobileChartSize({ width: 0, height: 0 });
-      return;
-    }
-
-    const container = mobileChartContainerRef.current;
-    if (!container) {
-      setMobileChartSize({ width: 0, height: 0 });
-      return;
-    }
-
-    const updateSize = () => {
-      const { width, height } = container.getBoundingClientRect();
-      setMobileChartSize({
-        width: width > 0 ? Math.floor(width) : 0,
-        height: height > 0 ? Math.floor(height) : 0,
-      });
-    };
-
-    updateSize();
-    const rafId = window.requestAnimationFrame(updateSize);
-    const resizeObserver = new ResizeObserver(updateSize);
-    resizeObserver.observe(container);
-
-    return () => {
-      window.cancelAnimationFrame(rafId);
-      resizeObserver.disconnect();
-    };
-  }, [isMounted, isMobile]);
 
   useEffect(() => {
     if (!selectedTeamLive) {
@@ -247,57 +247,97 @@ export default function Home({ onNavigate }: HomeProps) {
     points: Number(stage.points) || 0,
   }));
 
+  const deferredSectionFallback = (
+    <div className="space-y-6">
+      <div className="h-72 rounded-3xl border border-white/5 bg-surface-card/70 animate-pulse" />
+      <div className="h-36 rounded-3xl border border-white/5 bg-surface-card/50 animate-pulse" />
+    </div>
+  );
+  const canRenderDeferredSections = shouldLoadDeferredSections && teamsReady;
+
   return (
     <div dir="rtl" className="space-y-8 pb-12">
       {/* Hero Section - Redesigned to be bolder */}
       <HomeHeroSection user={user} animationsEnabled={animationsEnabled} />
 
       {/* Mass Task Shortcut - Only for logged in users */}
-      <HomeMassTasks user={user} massTasks={massTasks} navigate={navigate} />
+      {shouldLoadMassTasks && user && !massTasksReady && (
+        <div className="h-24 rounded-2xl border border-white/5 bg-surface-card/50 animate-pulse" />
+      )}
+      {shouldLoadMassTasks && user && teamsReady && massTasksReady && (
+        <Suspense fallback={null}>
+          <HomeMassTasks user={user} massTasks={massTasks} navigate={navigate} />
+        </Suspense>
+      )}
 
       {/* Main Content Grid */}
-      <div className="grid lg:grid-cols-12 gap-6">
-
-        {/* Stages Chart - Modernized */}
-        <HomeStageStatsChart
-          animationsEnabled={animationsEnabled}
-          isMobile={isMobile}
-          prefersLowMotion={prefersLowMotion}
-          stageStats={stageStats}
-          mobileChartData={mobileChartData}
-        />
-
+      <div
+        ref={deferredSections.ref}
+        className="grid lg:grid-cols-12 gap-6"
+      >
+        {canRenderDeferredSections ? (
+          <Suspense fallback={deferredSectionFallback}>
+            <HomeStageStatsChart
+              animationsEnabled={animationsEnabled}
+              isMobile={isMobile}
+              prefersLowMotion={prefersLowMotion}
+              stageStats={stageStats}
+              mobileChartData={mobileChartData}
+            />
+          </Suspense>
+        ) : (
+          <div className="lg:col-span-8 h-72 rounded-3xl border border-white/5 bg-surface-card/70 animate-pulse" />
+        )}
         {/* Sidebar Sections */}
-        <HomeSidebarTeams
-          stageStats={stageStats}
-          user={user}
-          stats={stats}
-          navigate={navigate}
-          setSelectedTeam={setSelectedTeam}
-        />
+        {teamsReady ? (
+          <HomeSidebarTeams
+            stageStats={stageStats}
+            user={user}
+            stats={stats}
+            navigate={navigate}
+            setSelectedTeam={setSelectedTeam}
+          />
+        ) : (
+          <div className="lg:col-span-4 space-y-4">
+            <div className="h-64 rounded-3xl border border-white/5 bg-surface-card/60 animate-pulse" />
+            <div className="h-28 rounded-2xl border border-white/5 bg-surface-card/50 animate-pulse" />
+          </div>
+        )}
       </div >
 
       {/* Role Actions - Re-styled */}
-      <RoleActions user={user} animationsEnabled={animationsEnabled} navigate={navigate} />
+      {canRenderDeferredSections && (
+        <Suspense fallback={<div className="h-32 rounded-3xl border border-white/5 bg-surface-card/50 animate-pulse" />}>
+          <RoleActions user={user} animationsEnabled={animationsEnabled} navigate={navigate} />
+        </Suspense>
+      )}
 
       {/* Team Members Modal */}
-      <TeamMembersModal
-        selectedTeamLive={selectedTeamLive}
-        setSelectedTeam={setSelectedTeam}
-        animationsEnabled={animationsEnabled}
-        loadingMembers={loadingMembers}
-        teamMembersStats={teamMembersStats}
-        setMemberDetails={setMemberDetails}
-        buildMemberKey={buildMemberKey}
-      />
+      {selectedTeamLive && (
+        <Suspense fallback={null}>
+          <TeamMembersModal
+            selectedTeamLive={selectedTeamLive}
+            setSelectedTeam={setSelectedTeam}
+            animationsEnabled={animationsEnabled}
+            loadingMembers={loadingMembers}
+            teamMembersStats={teamMembersStats}
+            setMemberDetails={setMemberDetails}
+            buildMemberKey={buildMemberKey}
+          />
+        </Suspense>
+      )}
 
-      <MemberScoreDetailsModal
-        member={memberDetails}
-        onClose={() => setMemberDetails(null)}
-        stageScope={user?.role === 'super_admin'
-          ? null
-          : (user?.stageId || memberDetails?.stageId || selectedTeamLive?.stageId || null)}
-      />
+      {memberDetails && (
+        <Suspense fallback={null}>
+          <MemberScoreDetailsModal
+            member={memberDetails}
+            onClose={() => setMemberDetails(null)}
+            stageScope={user?.role === 'super_admin'
+              ? null
+              : (user?.stageId || memberDetails?.stageId || selectedTeamLive?.stageId || null)}
+          />
+        </Suspense>
+      )}
 
     </div >
   );

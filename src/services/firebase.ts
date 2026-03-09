@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 import { initializeApp } from 'firebase/app';
-import { getAuth } from 'firebase/auth';
+import { getAuth, initializeAuth, browserLocalPersistence } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
 
 const firebaseConfig = {
@@ -14,7 +14,18 @@ const firebaseConfig = {
 };
 
 const app = initializeApp(firebaseConfig);
-export const auth = getAuth(app);
+
+// Configure Auth without popup/redirect resolvers to avoid loading gapi in idle sessions.
+export const auth = (() => {
+    try {
+        return initializeAuth(app, {
+            persistence: [browserLocalPersistence],
+        });
+    } catch {
+        // When auth was already initialized (e.g. HMR), reuse the existing instance.
+        return getAuth(app);
+    }
+})();
 export const db = getFirestore(app);
 
 export default app;

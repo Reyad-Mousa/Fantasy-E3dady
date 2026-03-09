@@ -5,7 +5,6 @@ import { useAuth } from '@/context/AuthContext';
 import { useToast, SectionHeader, ConfirmModal } from './ui/SharedUI';
 import { motion, AnimatePresence } from 'motion/react';
 import { PieChart, Trophy, Users, BarChart3, X } from 'lucide-react';
-import * as XLSX from 'xlsx';
 import StageFilterBar, { type FilterValue } from './StageFilterBar';
 import StageBadge from './StageBadge';
 import { STAGES_LIST, StageId } from '@/config/stages';
@@ -504,6 +503,7 @@ export default function SuperAdminPanel({ onBack }: { onBack?: () => void }) {
 
         try {
             const data = await file.arrayBuffer();
+            const XLSX = await import('xlsx');
             const workbook = XLSX.read(data);
             const sheet = workbook.Sheets[workbook.SheetNames[0]];
             const rows: any[] = XLSX.utils.sheet_to_json(sheet);
@@ -535,8 +535,9 @@ export default function SuperAdminPanel({ onBack }: { onBack?: () => void }) {
     // =========================
     // Export Reports
     // =========================
-    const handleExportExcel = () => {
+    const handleExportExcel = async () => {
         try {
+            const XLSX = await import('xlsx');
             // Teams report
             const teamsData = teams.map(t => ({
                 'اسم الفريق': t.name,

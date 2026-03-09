@@ -120,6 +120,16 @@ export default function Leaderboard({ onBack }: { onBack?: () => void }) {
             aggregated.forEach((member) => {
                 const stageId = asStageId(member.stageId);
                 if (!stageId) return;
+
+                // Skip members who have been removed from their team
+                const team = teamsById[member.teamId];
+                if (!team) return; // team doesn't exist
+                const teamMembers = team.members || [];
+                const isStillInTeam = teamMembers.some(
+                    (name) => name.trim().toLowerCase() === member.memberName.trim().toLowerCase()
+                );
+                if (!isStillInTeam) return;
+
                 newMembersByStage[stageId].push({
                     id: member.id,
                     memberName: member.memberName,

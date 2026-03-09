@@ -1,12 +1,13 @@
 import { useState, useEffect } from 'react';
-import { collection, onSnapshot, doc, setDoc, deleteDoc, updateDoc, query, where, serverTimestamp, increment } from 'firebase/firestore';
+import { collection, onSnapshot, doc, setDoc, updateDoc, serverTimestamp, increment } from 'firebase/firestore';
 import { db } from '@/services/firebase';
 import { useAuth, canManageMembers, canManageAllTeams } from '@/context/AuthContext';
 import { useToast, SectionHeader, EmptyState, ConfirmModal } from './ui/SharedUI';
 import MemberScoreDetailsModal, { type MemberDetailsTarget } from './MemberScoreDetailsModal';
 import { motion, AnimatePresence } from 'motion/react';
-import { Users, Plus, Edit3, Trash2, X, Search, UserPlus, Mail, Shield } from 'lucide-react';
+import { Users, Edit3, Trash2, X, Search, UserPlus, Mail, Shield } from 'lucide-react';
 import { buildMemberKey } from '@/services/memberKeys';
+import { cleanupOrphanMemberStats, deleteUserCascade } from '@/services/usersService';
 
 interface Member {
     id: string;
@@ -36,6 +37,7 @@ export default function MembersPage({ onBack }: { onBack?: () => void }) {
     const [editingMember, setEditingMember] = useState<Member | null>(null);
     const [deleteConfirm, setDeleteConfirm] = useState<Member | null>(null);
     const [memberDetails, setMemberDetails] = useState<MemberDetailsTarget | null>(null);
+    const [cleaningOrphans, setCleaningOrphans] = useState(false);
 
     // Form state
     const [formName, setFormName] = useState('');
@@ -108,16 +110,37 @@ export default function MembersPage({ onBack }: { onBack?: () => void }) {
     const handleDelete = async () => {
         if (!deleteConfirm || !user) return;
         try {
-            await deleteDoc(doc(db, 'users', deleteConfirm.id));
-            if (deleteConfirm.teamId) {
-                await updateDoc(doc(db, 'teams', deleteConfirm.teamId), {
-                    memberCount: increment(-1),
-                });
-            }
+            await deleteUserCascade({
+                uid: deleteConfirm.id,
+                teamId: deleteConfirm.teamId,
+            });
             showToast('تم حذف العضو');
             setDeleteConfirm(null);
         } catch {
             showToast('فشل في حذف العضو', 'error');
+        }
+    };
+
+    const handleCleanupOrphans = async () => {
+        if (!user) return;
+        try {
+            setCleaningOrphans(true);
+            const stageId = user.role === 'super_admin' ? null : (user.stageId || null);
+            const { candidateCount, deletedCount } = await cleanupOrphanMemberStats({
+                stageId,
+                existingUserIds: members.map((m) => m.id),
+            });
+            showToast(
+                deletedCount > 0
+                    ? `تم تنظيف ${deletedCount} سجل يتيم من أصل ${candidateCount}`
+                    : `لا توجد سجلات يتيمة للتنظيف (تم فحص ${candidateCount})`,
+                'success'
+            );
+        } catch (err) {
+            console.error(err);
+            showToast('فشل تنظيف السجلات اليتيمة', 'error');
+        } finally {
+            setCleaningOrphans(false);
         }
     };
 
@@ -183,10 +206,20 @@ export default function MembersPage({ onBack }: { onBack?: () => void }) {
                 subtitle="أضف أعضاء وقم بتعيينهم في فرق"
                 onBack={onBack}
                 action={
-                    <button onClick={() => setShowAddModal(true)} className="btn btn-primary text-sm">
-                        <UserPlus className="w-4 h-4" />
-                        إضافة عضو
-                    </button>
+                    <div className="flex items-center gap-2">
+                        <button
+                            onClick={handleCleanupOrphans}
+                            disabled={cleaningOrphans}
+                            className="btn btn-ghost text-sm"
+                        >
+                            <Shield className={`w-4 h-4 ${cleaningOrphans ? 'animate-pulse' : ''}`} />
+                            {cleaningOrphans ? 'جاري التنظيف...' : 'تنظيف السجلات اليتيمة'}
+                        </button>
+                        <button onClick={() => setShowAddModal(true)} className="btn btn-primary text-sm">
+                            <UserPlus className="w-4 h-4" />
+                            إضافة عضو
+                        </button>
+                    </div>
                 }
             />
 

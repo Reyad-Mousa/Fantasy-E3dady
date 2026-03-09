@@ -27,6 +27,7 @@ interface AuthContextType {
   logout: () => Promise<void>;
   getAuthToken: () => Promise<string | null>;
   isLoading: boolean;
+  isShellReady: boolean;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -53,6 +54,61 @@ interface ClaimsProfile {
   stageName: string | null;
 }
 
+interface UserResolution {
+  user: User | null;
+  hadFetchFailure: boolean;
+}
+
+const USER_CACHE_KEY = 'fantasy_e3dady_user_cache';
+const USER_CACHE_MAX_AGE_MS = 1000 * 60 * 30;
+
+const canUseStorage = (): boolean =>
+  typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';
+
+const saveCachedUser = (user: User) => {
+  if (!canUseStorage()) return;
+  try {
+    window.localStorage.setItem(USER_CACHE_KEY, JSON.stringify({ user, savedAt: Date.now() }));
+  } catch {
+    // Ignore storage errors and keep auth flow running.
+  }
+};
+
+const clearCachedUser = () => {
+  if (!canUseStorage()) return;
+  try {
+    window.localStorage.removeItem(USER_CACHE_KEY);
+  } catch {
+    // Ignore storage errors and keep auth flow running.
+  }
+};
+
+const readCachedUser = (uid: string): User | null => {
+  if (!canUseStorage()) return null;
+  try {
+    const raw = window.localStorage.getItem(USER_CACHE_KEY);
+    if (!raw) return null;
+
+    const parsed = JSON.parse(raw) as { user?: User; savedAt?: number } | null;
+    if (!parsed?.user || typeof parsed.savedAt !== 'number') return null;
+    if (Date.now() - parsed.savedAt > USER_CACHE_MAX_AGE_MS) return null;
+    if (parsed.user.uid !== uid) return null;
+
+    const role = parseRole(parsed.user.role);
+    if (!role) return null;
+
+    return {
+      ...parsed.user,
+      role,
+      stageId: asNonEmptyString(parsed.user.stageId),
+      stageName: asNonEmptyString(parsed.user.stageName),
+      teamId: asNonEmptyString(parsed.user.teamId),
+    };
+  } catch {
+    return null;
+  }
+};
+
 const readClaimsProfile = async (firebaseUser: FirebaseUser, forceRefresh = false): Promise<ClaimsProfile> => {
   const tokenResult = await getIdTokenResult(firebaseUser, forceRefresh);
   return {
@@ -68,7 +124,8 @@ const readClaimsProfile = async (firebaseUser: FirebaseUser, forceRefresh = fals
  * 1. Firebase Auth custom claims (if set via Admin SDK)
  * 2. Firestore /users/{uid}.role (fallback — always works)
  */
-const toAppUser = async (firebaseUser: FirebaseUser): Promise<User | null> => {
+const resolveAppUser = async (firebaseUser: FirebaseUser): Promise<UserResolution> => {
+  let hadFetchFailure = false;
   let claimsProfile: ClaimsProfile = {
     role: null,
     teamId: null,
@@ -88,6 +145,7 @@ const toAppUser = async (firebaseUser: FirebaseUser): Promise<User | null> => {
       claimsProfile = await readClaimsProfile(firebaseUser, true);
     }
   } catch {
+    hadFetchFailure = true;
     // claims not available
   }
 
@@ -100,12 +158,13 @@ const toAppUser = async (firebaseUser: FirebaseUser): Promise<User | null> => {
       if (nameFromDoc) displayName = nameFromDoc;
     }
   } catch (err) {
+    hadFetchFailure = true;
     console.warn('Failed to fetch user doc from Firestore:', err);
   }
 
   const role = claimsProfile.role ?? parseRole(userDocData?.role);
   if (!role) {
-    return null;
+    return { user: null, hadFetchFailure };
   }
 
   const teamId = claimsProfile.teamId ?? asNonEmptyString(userDocData?.teamId);
@@ -119,44 +178,61 @@ const toAppUser = async (firebaseUser: FirebaseUser): Promise<User | null> => {
         stageId = asNonEmptyString(teamDoc.data().stageId);
       }
     } catch (err) {
+      hadFetchFailure = true;
       console.warn('Failed to infer stageId from team doc:', err);
     }
   }
 
   return {
-    uid: firebaseUser.uid,
-    email: firebaseUser.email,
-    role,
-    name: displayName,
-    teamId,
-    stageId,
-    stageName,
+    user: {
+      uid: firebaseUser.uid,
+      email: firebaseUser.email,
+      role,
+      name: displayName,
+      teamId,
+      stageId,
+      stageName,
+    },
+    hadFetchFailure,
   };
 };
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isShellReady, setIsShellReady] = useState(false);
 
   useEffect(() => {
+    setIsShellReady(true);
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       if (!firebaseUser) {
         setUser(null);
+        clearCachedUser();
         setIsLoading(false);
         return;
       }
 
       try {
-        const mappedUser = await toAppUser(firebaseUser);
-        if (!mappedUser) {
-          // No valid role found — sign out
-          await signOut(auth);
-          setUser(null);
+        const { user: resolvedUser, hadFetchFailure } = await resolveAppUser(firebaseUser);
+
+        if (resolvedUser) {
+          setUser(resolvedUser);
+          saveCachedUser(resolvedUser);
         } else {
-          setUser(mappedUser);
+          const cached = hadFetchFailure ? readCachedUser(firebaseUser.uid) : null;
+          if (cached) {
+            setUser(cached);
+          } else if (hadFetchFailure) {
+            setUser((prev) => (prev?.uid === firebaseUser.uid ? prev : null));
+          } else {
+            // No valid role after successful checks: treat as unauthorized session.
+            await signOut(auth);
+            setUser(null);
+          }
         }
       } catch {
-        setUser(null);
+        const cached = readCachedUser(firebaseUser.uid);
+        setUser((prev) => cached ?? (prev?.uid === firebaseUser.uid ? prev : null));
       } finally {
         setIsLoading(false);
       }
@@ -167,7 +243,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const login = async (email: string, password: string) => {
     const credential = await signInWithEmailAndPassword(auth, email, password);
-    const mappedUser = await toAppUser(credential.user);
+    const { user: mappedUser } = await resolveAppUser(credential.user);
 
     if (!mappedUser) {
       await signOut(auth);
@@ -175,11 +251,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
 
     setUser(mappedUser);
+    saveCachedUser(mappedUser);
   };
 
   const logout = async () => {
     await signOut(auth);
     setUser(null);
+    clearCachedUser();
   };
 
   const getAuthToken = async () => {
@@ -188,7 +266,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, login, logout, getAuthToken, isLoading }}>
+    <AuthContext.Provider value={{ user, login, logout, getAuthToken, isLoading, isShellReady }}>
       {children}
     </AuthContext.Provider>
   );
