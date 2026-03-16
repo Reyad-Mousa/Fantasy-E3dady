@@ -256,7 +256,7 @@ export default function Home({ onNavigate }: HomeProps) {
   const canRenderDeferredSections = shouldLoadDeferredSections && teamsReady;
 
   return (
-    <div dir="rtl" className="space-y-8 pb-12">
+    <div dir="rtl" className="space-y-8 pb-12 ">
       {/* Hero Section - Redesigned to be bolder */}
       <HomeHeroSection user={user} animationsEnabled={animationsEnabled} />
 

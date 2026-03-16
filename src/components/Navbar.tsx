@@ -177,7 +177,7 @@ export default function Navbar({ activeTab, setActiveTab, onLoginClick }: Navbar
                         initial={animationsEnabled ? { opacity: 0, y: 10, scale: 0.95 } : false}
                         animate={animationsEnabled ? { opacity: 1, y: 0, scale: 1 } : undefined}
                         exit={animationsEnabled ? { opacity: 0, y: 10, scale: 0.95 } : undefined}
-                        className="absolute right-0 top-full mt-3 w-[min(16rem,calc(100vw-2rem))] sm:w-56 bg-surface-card p-2 shadow-[0_20px_50px_rgba(0,0,0,0.5)] border border-white/10 rounded-2xl overflow-hidden"
+                        className="absolute left-0 top-full mt-3 w-[min(16rem,calc(100vw-2rem))] sm:w-56 bg-surface-card p-2 shadow-[0_20px_50px_rgba(0,0,0,0.5)] border border-white/10 rounded-2xl overflow-hidden"
                       >
                         <div className="relative p-4 mb-2 bg-white/5 rounded-xl border border-white/5">
                           <p className="text-sm font-black text-text-primary truncate">{user.name}</p>

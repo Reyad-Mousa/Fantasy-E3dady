@@ -77,7 +77,12 @@ service cloud.firestore {
 
     function isValidScorePayload() {
       return (getScoreTargetType() == 'team' || getScoreTargetType() == 'member') &&
-        request.resource.data.applyToTeamTotal == true &&
+        (
+          // Team scores must always count toward team total
+          (getScoreTargetType() == 'team' && request.resource.data.applyToTeamTotal == true) ||
+          // Member scores may or may not affect team total (e.g. team distribution)
+          (getScoreTargetType() == 'member' && request.resource.data.applyToTeamTotal is bool)
+        ) &&
         (
           getScoreTargetType() == 'team' ||
           (request.resource.data.memberKey is string &&
@@ -169,7 +174,8 @@ service cloud.firestore {
       allow update: if isAuthenticated() && (
         isSuperAdmin() ||
         ((isAdmin() || isLeader()) &&
-          isSameStage(resource.data.stageId) &&
+          // Allow leaders/admins to fix member_stats even if the existing doc has a mismatched stage.
+          // We only require the incoming stageId to match the user's stage.
           isSameStage(request.resource.data.stageId))
       );
       allow delete: if isAuthenticated() && (isSuperAdmin() || ((isAdmin() || isLeader()) && isSameStage(resource.data.stageId)));
