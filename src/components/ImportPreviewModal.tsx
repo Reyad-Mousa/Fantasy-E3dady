@@ -9,12 +9,14 @@ interface ImportPreviewModalProps {
     onConfirm: () => void;
     onCancel: () => void;
     isImporting: boolean;
+    removeMissingMembers: boolean;
+    onToggleRemoveMissingMembers: (value: boolean) => void;
     onUpdateTeamStage: (teamId: string, stageId: string) => void;
     stageOptions?: { id: string; name: string; }[];
 }
 
-export default function ImportPreviewModal({ data, onConfirm, onCancel, isImporting, onUpdateTeamStage, stageOptions }: ImportPreviewModalProps) {
-    const totalChanges = data.newTeams.length + data.newMembers.length + data.pointUpdates.length;
+export default function ImportPreviewModal({ data, onConfirm, onCancel, isImporting, removeMissingMembers, onToggleRemoveMissingMembers, onUpdateTeamStage, stageOptions }: ImportPreviewModalProps) {
+    const totalChanges = data.newTeams.length + data.newMembers.length + data.memberMoves.length + data.memberRemovals.length + data.pointUpdates.length;
     const missingStage = data.newTeams.some(t => !t.stageId || !t.stageId.trim());
     const options = stageOptions && stageOptions.length > 0 ? stageOptions : STAGES_LIST;
 
@@ -43,6 +45,22 @@ export default function ImportPreviewModal({ data, onConfirm, onCancel, isImport
                 </div>
 
                 <div className="p-6 md:p-8 overflow-y-auto space-y-6" dir="rtl">
+                    <div className="bg-black/20 border border-border/30 rounded-2xl p-3 text-xs text-text-muted leading-relaxed">
+                        هذا الاستيراد يعتمد على الملف كمصدر الحقيقة. تغيير الاسم يُعامل كحذف + إضافة. نقاط الفريق تُحسب من نقاط الأعضاء فقط ولا تُقرأ من عمود "إجمالي النقاط".
+                    </div>
+                    <div className="flex items-center justify-between gap-4 bg-surface/40 border border-border/30 rounded-2xl p-3">
+                        <label className="flex items-center gap-2 text-sm text-text-muted">
+                            <input
+                                type="checkbox"
+                                checked={removeMissingMembers}
+                                onChange={e => onToggleRemoveMissingMembers(e.target.checked)}
+                                className="h-4 w-4 rounded border-border bg-black/10 text-primary focus:ring-primary"
+                            />
+                            <span className="font-bold">حذف الأعضاء غير الموجودين في الملف</span>
+                        </label>
+                        <span className="text-[11px] text-text-muted">سيتم ترك الأعضاء في مجموعاتهم القديمة إذا تم إيقاف هذا الخيار.</span>
+                    </div>
+
                     {data.newTeams.length > 0 && (
                         <div className="bg-surface/50 border border-success/20 rounded-2xl p-4 space-y-3">
                             <div className="flex items-center gap-2 justify-between flex-wrap">
@@ -96,6 +114,43 @@ export default function ImportPreviewModal({ data, onConfirm, onCancel, isImport
                                 {data.newMembers.map((m, idx) => (
                                     <span key={idx} className="bg-info/10 text-info-light px-2.5 py-1 rounded-lg font-bold border border-info/20">
                                         {m.memberName} <span className="text-white/30 truncate mx-1">في</span> {m.teamName}
+                                    </span>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    {data.memberMoves.length > 0 && (
+                        <div className="bg-surface/50 border border-warning/20 rounded-2xl p-4">
+                            <h4 className="font-bold text-warning flex items-center gap-2 mb-3">
+                                <ArrowRight className="w-4 h-4" />
+                                أعضاء سيتم نقلهم ({data.memberMoves.length})
+                            </h4>
+                            <div className="flex flex-wrap gap-2 text-sm">
+                                {data.memberMoves.map((m, idx) => (
+                                    <span key={idx} className="bg-warning/10 text-warning-light px-2.5 py-1 rounded-lg font-bold border border-warning/20">
+                                        {m.memberName} <span className="text-white/30 truncate mx-1">من</span> {m.fromTeamName} <span className="text-white/30 truncate mx-1">إلى</span> {m.toTeamName}
+                                    </span>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    {data.memberRemovals.length > 0 && (
+                        <div className="bg-surface/50 border border-danger/20 rounded-2xl p-4">
+                            <h4 className="font-bold text-danger flex items-center gap-2 mb-3">
+                                <X className="w-4 h-4" />
+                                أعضاء سيتم حذفهم ({data.memberRemovals.length})
+                            </h4>
+                            {!removeMissingMembers && (
+                                <p className="text-warning text-xs font-bold mb-3 bg-warning/10 border border-warning/20 rounded-lg p-2">
+                                    ⚠️ لن تُطبق هذه الحذفيات لأن خيار "حذف الأعضاء غير الموجودين في الملف" معطل.
+                                </p>
+                            )}
+                            <div className="flex flex-wrap gap-2 text-sm">
+                                {data.memberRemovals.map((m, idx) => (
+                                    <span key={idx} className="bg-danger/10 text-danger-light px-2.5 py-1 rounded-lg font-bold border border-danger/20">
+                                        {m.memberName} <span className="text-white/30 truncate mx-1">من</span> {m.fromTeamName}
                                     </span>
                                 ))}
                             </div>
